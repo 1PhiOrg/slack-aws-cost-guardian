@@ -10,7 +10,7 @@ This Lambda is triggered by EventBridge on a schedule to:
 
 import json
 import os
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
@@ -46,17 +46,19 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     Event parameters (for testing):
     - test_mode: bool - If true, runs in test mode with verbose output
     - force_anomaly: bool - If true, generates a fake anomaly for testing Slack
+    - force_budget_alert: str - If set to "warning" or "critical", forces a budget alert
     - skip_storage: bool - If true, doesn't write to DynamoDB
     - skip_slack: bool - If true, doesn't send Slack notifications
     - skip_llm: bool - If true, skips AI analysis (faster testing)
     - dry_run: bool - Collect and analyze but don't store or notify
     """
-    print(f"Cost collector invoked at {datetime.utcnow().isoformat()}")
+    print(f"Cost collector invoked at {datetime.now(UTC).isoformat()}")
     print(f"Event: {json.dumps(event)}")
 
     # Test mode flags
     test_mode = event.get("test_mode", False)
     force_anomaly = event.get("force_anomaly", False)
+    force_budget_alert = event.get("force_budget_alert")  # "warning" or "critical"
     skip_storage = event.get("skip_storage", False) or event.get("dry_run", False)
     skip_slack = event.get("skip_slack", False) or event.get("dry_run", False)
     skip_llm = event.get("skip_llm", False)
@@ -286,6 +288,39 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     elif anomalies and skip_slack:
         print(f"[SKIP] Would send {len(anomalies)} Slack notifications")
 
+    # Check budget thresholds and send alerts
+    budget_alert_sent = None
+    if config.slack.enabled and not skip_slack:
+        # Force a test budget alert if requested
+        if force_budget_alert in ("warning", "critical"):
+            test_budget_info = BudgetStatus(
+                monthly_budget=budget_info.monthly_budget if budget_info else 1000.0,
+                monthly_spent=budget_info.monthly_spent if budget_info else 850.0,
+                monthly_percent=85.0 if force_budget_alert == "warning" else 105.0,
+            )
+            print(f"[TEST] Forcing {force_budget_alert} budget alert")
+            budget_alert_sent = _send_budget_alert_direct(
+                budget_info=test_budget_info,
+                threshold_type=force_budget_alert,
+                config=config,
+                slack_secret_name=slack_secret_name,
+                llm_client=llm_client,
+                guardian_context=guardian_context,
+                test_mode=test_mode,
+            )
+        elif budget_info:
+            budget_alert_sent = _check_and_send_budget_alert(
+                budget_info=budget_info,
+                config=config,
+                storage=storage,
+                slack_secret_name=slack_secret_name,
+                llm_client=llm_client,
+                guardian_context=guardian_context,
+                test_mode=test_mode,
+            )
+        if budget_alert_sent:
+            notifications_sent += 1
+
     # Return summary
     result = {
         "statusCode": 200,
@@ -295,6 +330,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             "services_count": len(cost_data.cost_by_service),
             "anomalies_detected": len(anomalies),
             "notifications_sent": notifications_sent,
+            "budget_alert": budget_alert_sent,
             "timestamp": snapshot.timestamp,
             "test_mode": test_mode,
         },
@@ -310,7 +346,7 @@ def _create_snapshot(
     environment: str,
 ) -> CostSnapshot:
     """Create a CostSnapshot from collected data."""
-    now = datetime.utcnow()
+    now = datetime.now(UTC)
 
     # Calculate TTL based on environment (90 days for daily snapshots)
     ttl_days = 90 if environment != "dev" else 7
@@ -523,7 +559,7 @@ def _handle_report_generation(
         cost_data = CostData(
             start_date=summary.get("date", ""),
             end_date=summary.get("date", ""),
-            collection_timestamp=datetime.utcnow().isoformat(),
+            collection_timestamp=datetime.now(UTC).isoformat(),
             account_id="",
             total_cost=summary.get("total_cost", 0),
             cost_by_service=top_services_dict,
@@ -641,7 +677,7 @@ def _handle_backfill(
     account_id = sts.get_caller_identity()["Account"]
 
     # Calculate date range
-    today = datetime.utcnow().date()
+    today = datetime.now(UTC).date()
     start_date = today - timedelta(days=days)
     end_date = today  # Cost Explorer end date is exclusive
 
@@ -699,7 +735,7 @@ def _handle_backfill(
 
         # Calculate TTL (90 days from now for backfilled data)
         ttl_days = 90 if config.environment != "dev" else 30
-        ttl = int((datetime.utcnow() + timedelta(days=ttl_days)).timestamp())
+        ttl = int((datetime.now(UTC) + timedelta(days=ttl_days)).timestamp())
 
         # Create snapshot
         snapshot = CostSnapshot(
@@ -733,3 +769,214 @@ def _handle_backfill(
 
     print(f"\nBackfill completed: {json.dumps(result['body'], indent=2)}")
     return result
+
+
+def _check_and_send_budget_alert(
+    budget_info: BudgetStatus,
+    config: Any,
+    storage: DynamoDBStorage,
+    slack_secret_name: str,
+    llm_client: LLMClient | None,
+    guardian_context: str,
+    test_mode: bool,
+) -> str | None:
+    """
+    Check if budget thresholds are exceeded and send alerts.
+
+    To avoid duplicate alerts, we check if we've already crossed this
+    threshold today by looking at earlier snapshots.
+
+    Args:
+        budget_info: Current budget status.
+        config: Application configuration.
+        storage: DynamoDB storage client.
+        slack_secret_name: Secrets Manager secret name.
+        llm_client: Optional LLM client for AI recommendations.
+        guardian_context: User context for AI.
+        test_mode: Whether running in test mode.
+
+    Returns:
+        "critical" or "warning" if alert sent, None otherwise.
+    """
+    warning_threshold = config.budgets.monthly.warning_threshold
+    critical_threshold = config.budgets.monthly.critical_threshold
+    current_percent = budget_info.monthly_percent
+
+    # Determine which threshold we've crossed
+    if current_percent >= critical_threshold:
+        threshold_type = "critical"
+        threshold_value = critical_threshold
+    elif current_percent >= warning_threshold:
+        threshold_type = "warning"
+        threshold_value = warning_threshold
+    else:
+        # No threshold crossed
+        return None
+
+    print(f"Budget threshold crossed: {current_percent:.1f}% >= {threshold_value}% ({threshold_type})")
+
+    # Check if we already sent an alert for this threshold today
+    today = datetime.now(UTC).date().isoformat()
+    today_snapshots = storage.get_snapshots_for_date(today)
+
+    # Look for earlier snapshots that also exceeded this threshold
+    already_alerted = False
+    for snapshot in today_snapshots:
+        if snapshot.budget_status:
+            prev_percent = snapshot.budget_status.monthly_percent
+            if threshold_type == "critical" and prev_percent >= critical_threshold:
+                already_alerted = True
+                break
+            elif threshold_type == "warning" and prev_percent >= warning_threshold:
+                # Only consider warning if we haven't crossed critical
+                if prev_percent < critical_threshold:
+                    already_alerted = True
+                    break
+
+    if already_alerted:
+        print(f"Budget {threshold_type} alert already sent today, skipping")
+        return None
+
+    # Generate AI recommendation if available
+    ai_recommendation = None
+    if llm_client:
+        try:
+            ai_recommendation = _generate_budget_recommendation(
+                budget_info=budget_info,
+                llm_client=llm_client,
+                guardian_context=guardian_context,
+            )
+            if ai_recommendation:
+                print("Generated AI recommendation for budget alert")
+        except Exception as e:
+            print(f"AI recommendation failed: {e}")
+
+    # Format and send the alert
+    try:
+        slack_formatter = SlackFormatter()
+        webhook_manager = SlackWebhookManager(
+            secret_name=slack_secret_name,
+            region=config.aws.region,
+        )
+
+        message = slack_formatter.format_budget_alert(
+            budget_status=budget_info,
+            threshold_type=threshold_type,
+            ai_recommendation=ai_recommendation,
+        )
+
+        # Route to appropriate channel
+        channel_key = (
+            config.slack.channels["critical"].webhook_secret_key
+            if threshold_type == "critical"
+            else config.slack.channels["heartbeat"].webhook_secret_key
+        )
+
+        webhook_manager.send_to_channel(channel_key, message)
+        print(f"Sent budget {threshold_type} alert to Slack")
+        return threshold_type
+
+    except Exception as e:
+        print(f"Error sending budget alert: {e}")
+        if test_mode:
+            import traceback
+            traceback.print_exc()
+        return None
+
+
+def _send_budget_alert_direct(
+    budget_info: BudgetStatus,
+    threshold_type: str,
+    config: Any,
+    slack_secret_name: str,
+    llm_client: LLMClient | None,
+    guardian_context: str,
+    test_mode: bool,
+) -> str | None:
+    """
+    Send a budget alert directly without duplicate checking.
+
+    Used for testing with force_budget_alert.
+    """
+    # Generate AI recommendation if available
+    ai_recommendation = None
+    if llm_client:
+        try:
+            ai_recommendation = _generate_budget_recommendation(
+                budget_info=budget_info,
+                llm_client=llm_client,
+                guardian_context=guardian_context,
+            )
+        except Exception as e:
+            print(f"AI recommendation failed: {e}")
+
+    try:
+        slack_formatter = SlackFormatter()
+        webhook_manager = SlackWebhookManager(
+            secret_name=slack_secret_name,
+            region=config.aws.region,
+        )
+
+        message = slack_formatter.format_budget_alert(
+            budget_status=budget_info,
+            threshold_type=threshold_type,
+            ai_recommendation=ai_recommendation,
+        )
+
+        channel_key = (
+            config.slack.channels["critical"].webhook_secret_key
+            if threshold_type == "critical"
+            else config.slack.channels["heartbeat"].webhook_secret_key
+        )
+
+        webhook_manager.send_to_channel(channel_key, message)
+        print(f"Sent budget {threshold_type} alert to Slack")
+        return threshold_type
+
+    except Exception as e:
+        print(f"Error sending budget alert: {e}")
+        if test_mode:
+            import traceback
+            traceback.print_exc()
+        return None
+
+
+def _generate_budget_recommendation(
+    budget_info: BudgetStatus,
+    llm_client: LLMClient,
+    guardian_context: str,
+) -> str | None:
+    """
+    Generate an AI recommendation for budget overage.
+
+    Args:
+        budget_info: Current budget status.
+        llm_client: LLM client.
+        guardian_context: User context.
+
+    Returns:
+        Recommendation text or None.
+    """
+    from slack_aws_cost_guardian.llm.base import LLMMessage
+
+    prompt = f"""The AWS monthly budget has reached {budget_info.monthly_percent:.0f}% utilization.
+
+Budget: ${budget_info.monthly_budget:.2f}
+Current Spend: ${budget_info.monthly_spent:.2f}
+
+User's Environment:
+{guardian_context}
+
+Provide a brief (2-3 sentences) recommendation for managing this budget situation.
+Focus on actionable steps. Do not repeat the numbers."""
+
+    try:
+        messages = [
+            LLMMessage(role="system", content=SYSTEM_PROMPT),
+            LLMMessage(role="user", content=prompt),
+        ]
+        response = llm_client.chat(messages)
+        return response.content
+    except Exception as e:
+        print(f"Budget recommendation generation failed: {e}")
+        return None

@@ -10,7 +10,7 @@ from __future__ import annotations
 import base64
 import json
 import os
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 import boto3
@@ -51,7 +51,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     Returns:
         HTTP response dict with statusCode and body.
     """
-    print(f"Slack callback received at {datetime.utcnow().isoformat()}")
+    print(f"Slack callback received at {datetime.now(UTC).isoformat()}")
 
     # Extract headers and body
     headers = {k.lower(): v for k, v in event.get("headers", {}).items()}
@@ -145,7 +145,7 @@ def _store_feedback(interaction: SlackInteraction, feedback_type: FeedbackType) 
 
     feedback = AnomalyFeedback(
         alert_id=interaction.alert_id,
-        date=datetime.utcnow().date().isoformat(),
+        date=datetime.now(UTC).date().isoformat(),
         user_id=interaction.user_id,
         user_name=interaction.user_name,
         feedback_type=feedback_type,

@@ -1,11 +1,53 @@
 """Slack Block Kit message formatting."""
 
-from datetime import datetime
+import re
+from datetime import UTC, datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from slack_aws_cost_guardian.analysis.anomaly_detector import DetectedAnomaly
 from slack_aws_cost_guardian.collectors.base import CostData
 from slack_aws_cost_guardian.storage.models import BudgetStatus, CostSnapshot
+
+# US Central timezone (handles DST automatically)
+CENTRAL_TZ = ZoneInfo("America/Chicago")
+
+
+def _get_central_timestamp() -> str:
+    """Get current timestamp formatted for US Central time."""
+    now_utc = datetime.now(UTC)
+    now_central = now_utc.astimezone(CENTRAL_TZ)
+    # Use %Z to show CST or CDT depending on DST
+    return now_central.strftime("%b %d, %Y at %I:%M %p %Z")
+
+
+def _markdown_to_mrkdwn(text: str) -> str:
+    """
+    Convert standard markdown to Slack mrkdwn format.
+
+    Slack mrkdwn differences:
+    - Bold: *text* (not **text**)
+    - Italic: _text_ (same)
+    - Links: <url|text> (not [text](url))
+    - No heading support (# converted to bold)
+    - Code: `text` (same)
+    """
+    if not text:
+        return text
+
+    # Convert **bold** to *bold*
+    text = re.sub(r'\*\*(.+?)\*\*', r'*\1*', text)
+
+    # Convert [text](url) to <url|text>
+    text = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'<\2|\1>', text)
+
+    # Convert markdown headings to bold text
+    text = re.sub(r'^#{1,6}\s+(.+)$', r'*\1*', text, flags=re.MULTILINE)
+
+    # Convert bullet points (already work but ensure consistency)
+    text = re.sub(r'^[\-\*]\s+', '• ', text, flags=re.MULTILINE)
+
+    return text
 
 
 class SlackFormatter:
@@ -42,7 +84,7 @@ class SlackFormatter:
             Slack Block Kit message payload.
         """
         emoji = self.SEVERITY_EMOJI.get(anomaly.severity, ":grey_question:")
-        timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+        timestamp = _get_central_timestamp()
 
         blocks = [
             # Header
@@ -78,12 +120,14 @@ class SlackFormatter:
 
         # AI Analysis section (if provided)
         if ai_analysis:
+            # Convert markdown to Slack mrkdwn format
+            formatted_analysis = _markdown_to_mrkdwn(ai_analysis)
             blocks.append(
                 {
                     "type": "section",
                     "text": {
                         "type": "mrkdwn",
-                        "text": f"*AI Analysis*\n{ai_analysis}",
+                        "text": f"*AI Analysis*\n{formatted_analysis}",
                     },
                 }
             )
@@ -132,7 +176,11 @@ class SlackFormatter:
             }
         )
 
-        return {"blocks": blocks}
+        return {
+            "username": "AWS Cost Guardian",
+            "icon_emoji": ":shield:",
+            "blocks": blocks,
+        }
 
     def format_daily_report(
         self,
@@ -163,7 +211,7 @@ class SlackFormatter:
             except ValueError:
                 date_str = report_date
         else:
-            date_str = datetime.utcnow().strftime("%B %d, %Y")
+            date_str = datetime.now(UTC).strftime("%B %d, %Y")
 
         trend_emoji = self.TREND_EMOJI.get(cost_data.trend, "")
 
@@ -256,31 +304,37 @@ class SlackFormatter:
 
         # AI Insight (if provided)
         if ai_insight:
+            formatted_insight = _markdown_to_mrkdwn(ai_insight)
             blocks.append({"type": "divider"})
             blocks.append(
                 {
                     "type": "section",
                     "text": {
                         "type": "mrkdwn",
-                        "text": f":bulb: *AI Insight*\n{ai_insight}",
+                        "text": f":bulb: *AI Insight*\n{formatted_insight}",
                     },
                 }
             )
 
-        # Footer
+        # Footer with timestamp
+        timestamp = _get_central_timestamp()
         blocks.append(
             {
                 "type": "context",
                 "elements": [
                     {
                         "type": "mrkdwn",
-                        "text": f"Period: {cost_data.start_date} to {cost_data.end_date}",
+                        "text": f"Period: {cost_data.start_date} to {cost_data.end_date} | Generated {timestamp}",
                     }
                 ],
             }
         )
 
-        return {"blocks": blocks}
+        return {
+            "username": "AWS Cost Guardian",
+            "icon_emoji": ":bar_chart:",
+            "blocks": blocks,
+        }
 
     def format_weekly_report(
         self,
@@ -387,18 +441,37 @@ class SlackFormatter:
 
         # AI Insight (if provided)
         if ai_insight:
+            formatted_insight = _markdown_to_mrkdwn(ai_insight)
             blocks.append({"type": "divider"})
             blocks.append(
                 {
                     "type": "section",
                     "text": {
                         "type": "mrkdwn",
-                        "text": f":bulb: *AI Insight*\n{ai_insight}",
+                        "text": f":bulb: *AI Insight*\n{formatted_insight}",
                     },
                 }
             )
 
-        return {"blocks": blocks}
+        # Footer with timestamp
+        timestamp = _get_central_timestamp()
+        blocks.append(
+            {
+                "type": "context",
+                "elements": [
+                    {
+                        "type": "mrkdwn",
+                        "text": f"Generated {timestamp}",
+                    }
+                ],
+            }
+        )
+
+        return {
+            "username": "AWS Cost Guardian",
+            "icon_emoji": ":calendar:",
+            "blocks": blocks,
+        }
 
     def format_budget_alert(
         self,
@@ -452,18 +525,37 @@ class SlackFormatter:
         ]
 
         if ai_recommendation:
+            formatted_rec = _markdown_to_mrkdwn(ai_recommendation)
             blocks.append({"type": "divider"})
             blocks.append(
                 {
                     "type": "section",
                     "text": {
                         "type": "mrkdwn",
-                        "text": f":bulb: *Recommendation*\n{ai_recommendation}",
+                        "text": f":bulb: *Recommendation*\n{formatted_rec}",
                     },
                 }
             )
 
-        return {"blocks": blocks}
+        # Footer with timestamp
+        timestamp = _get_central_timestamp()
+        blocks.append(
+            {
+                "type": "context",
+                "elements": [
+                    {
+                        "type": "mrkdwn",
+                        "text": f"Generated {timestamp}",
+                    }
+                ],
+            }
+        )
+
+        return {
+            "username": "AWS Cost Guardian",
+            "icon_emoji": ":moneybag:",
+            "blocks": blocks,
+        }
 
     def format_feedback_confirmation(
         self,
@@ -483,14 +575,17 @@ class SlackFormatter:
         }
         emoji = emoji_map.get(feedback_type, ":grey_question:")
 
+        timestamp = _get_central_timestamp()
         return {
+            "username": "AWS Cost Guardian",
+            "icon_emoji": ":shield:",
             "blocks": [
                 {
                     "type": "context",
                     "elements": [
                         {
                             "type": "mrkdwn",
-                            "text": f"{emoji} Marked as *{feedback_type}* by {user_name}",
+                            "text": f"{emoji} Marked as *{feedback_type}* by {user_name} at {timestamp}",
                         }
                     ],
                 }
@@ -500,6 +595,8 @@ class SlackFormatter:
     def format_simple_message(self, text: str, emoji: str = ":robot_face:") -> dict[str, Any]:
         """Format a simple text message."""
         return {
+            "username": "AWS Cost Guardian",
+            "icon_emoji": ":shield:",
             "blocks": [
                 {
                     "type": "section",

@@ -5,7 +5,7 @@ Cost Explorer API charges $0.01 per request.
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Literal
 
 import boto3
@@ -100,7 +100,7 @@ class CostExplorerCollector(CostCollector):
         if start_date is None:
             start_date = end_date - timedelta(days=lookback_days)
 
-        collection_timestamp = datetime.utcnow().isoformat() + "Z"
+        collection_timestamp = datetime.now(UTC).isoformat() + "Z"
 
         # Collect all cost data
         daily_costs = self._get_daily_costs(start_date, end_date)

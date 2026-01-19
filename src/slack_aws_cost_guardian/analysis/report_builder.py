@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from slack_aws_cost_guardian.storage.dynamodb import DynamoDBStorage
@@ -25,7 +25,7 @@ def build_daily_summary(
     Returns:
         Dict with: total_cost, top_services, trend, budget_percent, etc.
     """
-    today = datetime.utcnow().date()
+    today = datetime.now(UTC).date()
     yesterday = today - timedelta(days=1)
 
     if target_date is None:
@@ -115,7 +115,7 @@ def build_weekly_summary(
         Dict with: total_cost, week_over_week_change, top_services, anomaly_count, etc.
     """
     if end_date is None:
-        end_date = (datetime.utcnow().date() - timedelta(days=1)).isoformat()
+        end_date = (datetime.now(UTC).date() - timedelta(days=1)).isoformat()
 
     end_dt = datetime.fromisoformat(end_date).date()
     start_dt = end_dt - timedelta(days=6)  # 7 days including end_date
@@ -237,7 +237,7 @@ def _calculate_trend(storage: DynamoDBStorage, latest: CostSnapshot) -> str:
         Trend string: "increasing", "decreasing", or "stable".
     """
     # Get last 7 days of snapshots
-    today = datetime.utcnow().date()
+    today = datetime.now(UTC).date()
     daily_costs = []
 
     for i in range(1, 8):  # Skip today, get last 7 days

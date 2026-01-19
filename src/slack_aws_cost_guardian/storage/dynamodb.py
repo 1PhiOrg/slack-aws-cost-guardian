@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Iterator
 
 if TYPE_CHECKING:
@@ -99,7 +99,7 @@ class DynamoDBStorage:
             List of CostSnapshot objects, sorted by date descending.
         """
         snapshots = []
-        today = datetime.utcnow().date()
+        today = datetime.now(UTC).date()
 
         for i in range(days):
             date = (today - timedelta(days=i)).isoformat()
@@ -122,7 +122,7 @@ class DynamoDBStorage:
         Returns:
             Most recent CostSnapshot if found, None otherwise.
         """
-        today = datetime.utcnow().date()
+        today = datetime.now(UTC).date()
 
         # Check last 3 days to handle missing data
         for i in range(3):
@@ -191,7 +191,7 @@ class DynamoDBStorage:
             List of AnomalyFeedback objects.
         """
         feedback_list = []
-        today = datetime.utcnow().date()
+        today = datetime.now(UTC).date()
 
         for i in range(days):
             date = (today - timedelta(days=i)).isoformat()

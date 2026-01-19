@@ -1,7 +1,7 @@
 """Pytest configuration and fixtures."""
 
 import pytest
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 
 @pytest.fixture
@@ -21,9 +21,9 @@ def sample_snapshot_data(sample_cost_by_service):
     """Sample cost snapshot data."""
     return {
         "snapshot_id": "test-snapshot-123",
-        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "timestamp": datetime.now(UTC).isoformat() + "Z",
         "account_id": "123456789012",
-        "date": datetime.utcnow().date().isoformat(),
+        "date": datetime.now(UTC).date().isoformat(),
         "hour": 12,
         "period_type": "daily",
         "total_cost": sum(sample_cost_by_service.values()),
