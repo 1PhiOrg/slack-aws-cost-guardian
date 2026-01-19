@@ -6,10 +6,10 @@ AI-powered AWS cost monitoring with Slack integration. Detects spending anomalie
 ## Tech Stack
 - **Language**: Python 3.12
 - **Infrastructure**: AWS CDK v2
-- **Storage**: DynamoDB (on-demand)
-- **Compute**: AWS Lambda
+- **Storage**: DynamoDB (single-table design)
+- **Compute**: AWS Lambda (ARM64)
 - **AI**: Claude API (Anthropic), with abstraction for OpenAI
-- **Notifications**: Slack webhooks (Phase 1), Slack app (Phase 2)
+- **Notifications**: Slack webhooks with interactive buttons
 - **Package Manager**: uv
 
 ## Important Rules
@@ -25,45 +25,64 @@ AI-powered AWS cost monitoring with Slack integration. Detects spending anomalie
 | "PR", "pull request" | Run `/pr` skill |
 
 ## Key Files
-- `DESIGN.md` - Full system architecture and implementation plan
-- `reference/` - Patterns from previous implementation (not committed)
+- `docs/ARCHITECTURE.md` - Technical reference (DynamoDB schema, IAM, secrets)
+- `docs/BACKLOG.md` - Future features and roadmap
 - `src/slack_aws_cost_guardian/` - Main Python package
 - `cdk/` - CDK infrastructure code
+- `config/guardian-context.md` - AI context about the user's infrastructure
+
+## Configuration
+
+Secrets are managed via `.env` file (copy from `.env.example`):
+```bash
+cp .env.example .env
+# Edit .env with your values
+```
+
+The `.env` file contains:
+- `ENV` - Deployment environment (dev/staging/prod)
+- `SLACK_WEBHOOK_CRITICAL` / `SLACK_WEBHOOK_HEARTBEAT` - Slack webhook URLs
+- `SLACK_SIGNING_SECRET` - For verifying button callbacks
+- `ANTHROPIC_API_KEY` - Claude API key for AI analysis (optional)
+- `OPENAI_API_KEY` - OpenAI API key as alternative (optional)
+
+`make deploy` automatically syncs `.env` values to AWS Secrets Manager.
 
 ## Development Commands
 ```bash
+# First time setup
+make setup
+
 # Activate environment
 source .venv/bin/activate
 
-# Install dependencies
-uv pip install -e ".[dev,cdk,llm]"
-
 # Run tests
-pytest tests/
+make test
 
-# Infrastructure (always use make, never cdk directly)
-make synth      # Synthesize CloudFormation
-make deploy     # Deploy all stacks
-make destroy    # Tear down all stacks
+# Deploy (also configures secrets from .env)
+make deploy
 
-# Testing
-make test-collect   # Test cost collection (dry run)
-make test-alert     # Test with forced anomaly alert
+# Validate deployment
+make validate
+
+# Test alerts
+make test-collect   # Dry run
+make test-alert     # Send test anomaly
+make test-daily     # Send daily report
+make test-weekly    # Send weekly report
+
+# View all commands
+make help
 ```
 
-## Implementation Phases
-We are building Phase 1 first:
+## Project Status
+All core features implemented:
+- Cost collection from AWS Cost Explorer
+- Anomaly detection with configurable thresholds
+- AI-powered analysis (Claude/OpenAI)
+- Interactive Slack alerts with feedback buttons
+- Daily and weekly summary reports
+- Budget threshold alerts (80%/100%)
+- Historical data backfill
 
-1. DynamoDB tables (cost_snapshots, anomaly_feedback, change_log)
-2. Cost Collector Lambda + EventBridge schedule
-3. Cost collection from AWS Cost Explorer
-4. Basic anomaly detection
-5. Simple Slack webhook notifications
-6. Reference Implementation
-
-## The reference/ directory contains useful patterns from a previous project:
-- reference/tools/cost_tools.py - AWS Cost Explorer queries
-- reference/tools/infrastructure_tools.py - AWS resource queries
-- reference/config.yaml - Configuration structure example
-
-- These should be adapted to the new architecture, not copied directly.
+See `docs/BACKLOG.md` for future enhancements.

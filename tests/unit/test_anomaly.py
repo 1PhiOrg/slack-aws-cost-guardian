@@ -1,7 +1,7 @@
 """Tests for anomaly detection module."""
 
 import pytest
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 from slack_aws_cost_guardian.analysis.anomaly_detector import AnomalyDetector, DetectedAnomaly
 from slack_aws_cost_guardian.analysis.baseline import BaselineCalculator, Baseline
@@ -11,7 +11,7 @@ from slack_aws_cost_guardian.storage.models import CostSnapshot
 
 def create_snapshot(date_offset: int, cost_by_service: dict[str, float]) -> CostSnapshot:
     """Helper to create a test snapshot."""
-    test_date = datetime.utcnow().date() - timedelta(days=date_offset)
+    test_date = datetime.now(UTC).date() - timedelta(days=date_offset)
     return CostSnapshot(
         account_id="123456789012",
         date=test_date.isoformat(),

@@ -1,6 +1,6 @@
 """Data models for DynamoDB storage."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import Enum
 from typing import Literal
 from uuid import uuid4
@@ -13,7 +13,7 @@ def _generate_uuid() -> str:
 
 
 def _utc_now_iso() -> str:
-    return datetime.utcnow().isoformat() + "Z"
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S") + "Z"
 
 
 class AnomalyInfo(BaseModel):
