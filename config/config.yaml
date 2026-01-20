@@ -29,15 +29,16 @@ collection:
     monthly_days: 730  # 2 years
 
 # Budget configuration
+# 1Phi combined budget: Dev account ~$100 + Management account ~$500 (Databricks)
 budgets:
   monthly:
-    amount: 5
+    amount: 100
     currency: "USD"
-    warning_threshold: 80   # Percentage
-    critical_threshold: 100
+    warning_threshold: 80   # Alert at (80%)
+    critical_threshold: 100 # Alert at (100%)
 
   daily:
-    amount: 1
+    amount: 15              # ~$450/month daily spend cap
     warning_threshold: 100
 
 # Anomaly detection
@@ -77,11 +78,11 @@ slack:
 
   channels:
     critical:
-      name: "#aws-alerts-critical"
+      name: "#ops-alerts"        # Critical anomalies and budget breaches
       webhook_secret_key: "webhook_url_critical"
 
     heartbeat:
-      name: "#aws-alerts-general"
+      name: "#ops-monitoring"       # Daily/weekly reports and minor alerts
       webhook_secret_key: "webhook_url_heartbeat"
 
   features:

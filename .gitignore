@@ -213,6 +213,9 @@ TODO.md
 # AWS credentials (never commit)
 .aws/
 
+# direnv
+.envrc
+
 # AWS CDK
 cdk.out/
 cdk.context.json
