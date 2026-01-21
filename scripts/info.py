@@ -24,6 +24,15 @@ DIM = "\033[2m"
 
 
 @dataclass
+class VersionInfo:
+    local_version: str
+    deployed_version: str | None
+    git_commit: str
+    deployed_commit: str | None
+    deploy_timestamp: str | None
+
+
+@dataclass
 class EnvironmentInfo:
     account_id: str
     region: str
@@ -182,6 +191,56 @@ class CostGuardianInfo:
             )
         except ClientError as e:
             print(f"{YELLOW}Warning: Could not get environment info: {e}{RESET}")
+            return None
+
+    def get_version_info(self) -> VersionInfo | None:
+        """Get version information from local file and deployed Lambda."""
+        try:
+            import subprocess
+
+            # Get local version
+            version_file = Path(__file__).parent.parent / "VERSION"
+            local_version = version_file.read_text().strip() if version_file.exists() else "0.0.0"
+
+            # Get local git commit
+            try:
+                result = subprocess.run(
+                    ["git", "rev-parse", "--short", "HEAD"],
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                    cwd=Path(__file__).parent.parent,
+                )
+                git_commit = result.stdout.strip()
+            except Exception:
+                git_commit = "unknown"
+
+            # Get deployed version from Lambda env vars
+            deployed_version = None
+            deployed_commit = None
+            deploy_timestamp = None
+
+            func_name = f"cost-guardian-collector-{self.env}"
+            try:
+                response = self.lambda_client.get_function_configuration(
+                    FunctionName=func_name
+                )
+                env_vars = response.get("Environment", {}).get("Variables", {})
+                deployed_version = env_vars.get("APP_VERSION")
+                deployed_commit = env_vars.get("GIT_COMMIT")
+                deploy_timestamp = env_vars.get("DEPLOY_TIMESTAMP")
+            except ClientError:
+                pass
+
+            return VersionInfo(
+                local_version=local_version,
+                deployed_version=deployed_version,
+                git_commit=git_commit,
+                deployed_commit=deployed_commit,
+                deploy_timestamp=deploy_timestamp,
+            )
+        except Exception as e:
+            print(f"{YELLOW}Warning: Could not get version info: {e}{RESET}")
             return None
 
     def get_lambda_info(self) -> list[LambdaInfo]:
@@ -567,6 +626,7 @@ class CostGuardianInfo:
     def collect_all(self) -> dict[str, Any]:
         """Collect all info sections."""
         return {
+            "version": self.get_version_info(),
             "environment": self.get_environment_info(),
             "lambdas": self.get_lambda_info(),
             "slack": self.get_slack_info(),
@@ -581,8 +641,29 @@ class CostGuardianInfo:
 
     def print_formatted(self, data: dict[str, Any]) -> None:
         """Print colored, formatted output."""
-        print(f"\n{BLUE}{BOLD}Cost Guardian Info ({self.env}){RESET}")
-        print("=" * 40)
+        # Version info in header
+        version_info = data.get("version")
+        if version_info:
+            local_ver = version_info.local_version
+            deployed_ver = version_info.deployed_version or "not deployed"
+            print(f"\n{BLUE}{BOLD}Cost Guardian v{local_ver} ({self.env}){RESET}")
+            print("=" * 40)
+
+            print(f"\n{BOLD}VERSION{RESET}")
+            print(f"  Local:    v{local_ver} ({version_info.git_commit})")
+            if version_info.deployed_version:
+                # Check if deployed matches local
+                if version_info.deployed_version == local_ver and version_info.deployed_commit == version_info.git_commit:
+                    print(f"  Deployed: v{version_info.deployed_version} ({version_info.deployed_commit}) {GREEN}✓ current{RESET}")
+                else:
+                    print(f"  Deployed: v{version_info.deployed_version} ({version_info.deployed_commit}) {YELLOW}← needs deploy{RESET}")
+                if version_info.deploy_timestamp:
+                    print(f"  Deployed: {version_info.deploy_timestamp}")
+            else:
+                print(f"  Deployed: {YELLOW}Not deployed yet{RESET}")
+        else:
+            print(f"\n{BLUE}{BOLD}Cost Guardian Info ({self.env}){RESET}")
+            print("=" * 40)
 
         # Environment
         env_info = data.get("environment")

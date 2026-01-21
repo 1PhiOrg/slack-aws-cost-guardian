@@ -24,6 +24,18 @@ AI-powered AWS cost monitoring with Slack integration. Detects spending anomalie
 | "commit", "make a commit" | Run `/commit` skill |
 | "PR", "pull request" | Run `/pr` skill |
 
+## Version Management
+
+The project uses semantic versioning stored in the `VERSION` file.
+
+**Before committing significant changes**, remind the user to consider bumping the version:
+- `make bump` - Interactive version bump menu
+- `make bump-patch` - Bug fixes (0.1.0 → 0.1.1)
+- `make bump-minor` - New features (0.1.0 → 0.2.0)
+- `make bump-major` - Breaking changes (0.1.0 → 1.0.0)
+
+**On deploy**, the version and git commit are embedded in the Lambda and a notification is sent to Slack.
+
 ## Key Files
 - `docs/ARCHITECTURE.md` - Technical reference (DynamoDB schema, IAM, secrets)
 - `docs/BACKLOG.md` - Future features and roadmap
@@ -59,11 +71,18 @@ source .venv/bin/activate
 # Run tests
 make test
 
+# Version management
+make version        # Show current version
+make bump           # Interactive version bump
+
 # Deploy (also configures secrets from .env)
 make deploy
 
 # Validate deployment
 make validate
+
+# Show deployment info (including version)
+make info
 
 # Test alerts
 make test-collect   # Dry run

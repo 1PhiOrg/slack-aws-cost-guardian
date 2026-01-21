@@ -4,7 +4,7 @@
 .PHONY: help setup test synth diff deploy destroy validate \
         update-context invoke-collector setup-slack setup-llm clean logs \
         test-daily test-weekly backfill test-budget-warning test-budget-critical \
-        info info-json info-secrets
+        info info-json info-secrets version bump bump-major bump-minor bump-patch
 
 # Load environment from .env file (if exists)
 # Priority: command line > .env > default
@@ -17,6 +17,10 @@ AWS_REGION ?= us-east-1
 
 # Default backfill days
 BACKFILL_DAYS ?= 30
+
+# Version from VERSION file
+VERSION := $(shell cat VERSION 2>/dev/null || echo "0.0.0")
+GIT_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 
 # Colors for output
 BLUE := \033[34m
@@ -34,6 +38,50 @@ help: ## Show this help message
 		/^##@/ { printf "\n$(BOLD)$(GREEN)%s$(RESET)\n", substr($$0, 5) } \
 		/^[a-zA-Z_-]+:.*?##/ { printf "  $(YELLOW)%-22s$(RESET) %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
 	@echo ""
+
+##@ Version Management
+
+version: ## Show current version
+	@echo "$(BLUE)Cost Guardian$(RESET) v$(VERSION) ($(GIT_COMMIT))"
+
+bump: ## Interactively bump version (shows menu)
+	@echo "$(BLUE)Current version: $(VERSION)$(RESET)"
+	@echo ""
+	@echo "Select version bump type:"
+	@echo "  1) patch  ($(VERSION) -> $$(echo $(VERSION) | awk -F. '{print $$1"."$$2"."$$3+1}'))"
+	@echo "  2) minor  ($(VERSION) -> $$(echo $(VERSION) | awk -F. '{print $$1"."$$2+1".0"}'))"
+	@echo "  3) major  ($(VERSION) -> $$(echo $(VERSION) | awk -F. '{print $$1+1".0.0"}'))"
+	@echo "  4) cancel"
+	@echo ""
+	@read -p "Choice [1-4]: " choice && \
+	case $$choice in \
+		1) $(MAKE) bump-patch ;; \
+		2) $(MAKE) bump-minor ;; \
+		3) $(MAKE) bump-major ;; \
+		4) echo "Cancelled" ;; \
+		*) echo "Invalid choice" ;; \
+	esac
+
+bump-patch: ## Bump patch version (0.1.0 -> 0.1.1)
+	@NEW_VERSION=$$(echo $(VERSION) | awk -F. '{print $$1"."$$2"."$$3+1}') && \
+	echo "$$NEW_VERSION" > VERSION && \
+	echo "$(GREEN)Version bumped: $(VERSION) -> $$NEW_VERSION$(RESET)" && \
+	echo "" && \
+	echo "$(YELLOW)Remember to commit the VERSION file!$(RESET)"
+
+bump-minor: ## Bump minor version (0.1.0 -> 0.2.0)
+	@NEW_VERSION=$$(echo $(VERSION) | awk -F. '{print $$1"."$$2+1".0"}') && \
+	echo "$$NEW_VERSION" > VERSION && \
+	echo "$(GREEN)Version bumped: $(VERSION) -> $$NEW_VERSION$(RESET)" && \
+	echo "" && \
+	echo "$(YELLOW)Remember to commit the VERSION file!$(RESET)"
+
+bump-major: ## Bump major version (0.1.0 -> 1.0.0)
+	@NEW_VERSION=$$(echo $(VERSION) | awk -F. '{print $$1+1".0.0"}') && \
+	echo "$$NEW_VERSION" > VERSION && \
+	echo "$(GREEN)Version bumped: $(VERSION) -> $$NEW_VERSION$(RESET)" && \
+	echo "" && \
+	echo "$(YELLOW)Remember to commit the VERSION file!$(RESET)"
 
 ##@ Getting Started
 
@@ -95,7 +143,7 @@ diff: ## Show what would change on deploy
 	cdk diff --all --context environment=$(ENV)
 
 deploy: ## Deploy all stacks and configure secrets from .env
-	@echo "$(BLUE)Deploying Cost Guardian ($(ENV))...$(RESET)"
+	@echo "$(BLUE)Deploying Cost Guardian v$(VERSION) ($(ENV))...$(RESET)"
 	cdk deploy --all --context environment=$(ENV) --require-approval never
 	@echo ""
 	@echo "$(BLUE)Checking guardian context...$(RESET)"
@@ -103,7 +151,36 @@ deploy: ## Deploy all stacks and configure secrets from .env
 	@echo ""
 	@$(MAKE) _configure-secrets-from-env ENV=$(ENV)
 	@echo ""
-	@echo "$(GREEN)Deployment complete!$(RESET)"
+	@$(MAKE) _notify-deployment ENV=$(ENV)
+	@echo ""
+	@echo "$(GREEN)Deployment complete! v$(VERSION) ($(GIT_COMMIT))$(RESET)"
+
+_notify-deployment:
+	@if [ -f .env ]; then \
+		. ./.env 2>/dev/null || true; \
+	fi && \
+	if [ -n "$$SLACK_WEBHOOK_HEARTBEAT" ] && [ "$$SLACK_WEBHOOK_HEARTBEAT" != "https://hooks.slack.com/services/YOUR/WEBHOOK/URL" ]; then \
+		TIMESTAMP=$$(date "+%b %d, %Y at %I:%M %p %Z") && \
+		echo "$(BLUE)Sending deployment notification to Slack...$(RESET)" && \
+		curl -s -X POST "$$SLACK_WEBHOOK_HEARTBEAT" \
+			-H "Content-Type: application/json" \
+			-d "{ \
+				\"username\": \"Cost Guardian\", \
+				\"icon_emoji\": \":rocket:\", \
+				\"blocks\": [ \
+					{\"type\": \"header\", \"text\": {\"type\": \"plain_text\", \"text\": \":rocket: Cost Guardian Deployed\", \"emoji\": true}}, \
+					{\"type\": \"section\", \"fields\": [ \
+						{\"type\": \"mrkdwn\", \"text\": \"*Version*\n$(VERSION)\"}, \
+						{\"type\": \"mrkdwn\", \"text\": \"*Environment*\n$(ENV)\"}, \
+						{\"type\": \"mrkdwn\", \"text\": \"*Commit*\n\`$(GIT_COMMIT)\`\"}, \
+						{\"type\": \"mrkdwn\", \"text\": \"*Deployed*\n$$TIMESTAMP\"} \
+					]} \
+				] \
+			}" >/dev/null && \
+		echo "$(GREEN)✓ Deployment notification sent$(RESET)"; \
+	else \
+		echo "$(YELLOW)⚠ Slack webhook not configured, skipping deployment notification$(RESET)"; \
+	fi
 
 _configure-secrets-from-env:
 	@if [ -f .env ]; then \
@@ -134,9 +211,12 @@ _configure-secrets-from-env:
 		echo "$(BLUE)Configuring LLM API key from .env...$(RESET)" && \
 		aws secretsmanager put-secret-value \
 			--secret-id "$$LLM_SECRET" \
-			--secret-string "{\"anthropic_api_key\":\"$${ANTHROPIC_API_KEY:-}\",\"openai_api_key\":\"$${OPENAI_API_KEY:-}\"}" >/dev/null && \
+			--secret-string "{\"anthropic_api_key\":\"$${ANTHROPIC_API_KEY:-}\",\"anthropic_admin_api_key\":\"$${ANTHROPIC_ADMIN_API_KEY:-}\",\"openai_api_key\":\"$${OPENAI_API_KEY:-}\"}" >/dev/null && \
 		echo "$(GREEN)✓ LLM API key configured$(RESET)" && \
 		LLM_CONFIGURED=true; \
+		if [ -n "$$ANTHROPIC_ADMIN_API_KEY" ]; then \
+			echo "$(GREEN)✓ Anthropic Admin API key configured (Claude cost collection enabled)$(RESET)"; \
+		fi; \
 	fi && \
 	if [ "$$SLACK_CONFIGURED" = "false" ]; then \
 		echo "" && \
@@ -211,12 +291,16 @@ setup-llm: ## Configure LLM API key (from .env or shows instructions)
 	fi && \
 	if [ -n "$$ANTHROPIC_API_KEY" ] || [ -n "$$OPENAI_API_KEY" ]; then \
 		ANTHROPIC_KEY=$${ANTHROPIC_API_KEY:-} && \
+		ANTHROPIC_ADMIN_KEY=$${ANTHROPIC_ADMIN_API_KEY:-} && \
 		OPENAI_KEY=$${OPENAI_API_KEY:-} && \
 		echo "$(GREEN)Found LLM API key(s) in .env$(RESET)" && \
 		aws secretsmanager put-secret-value \
 			--secret-id "$$SECRET_ARN" \
-			--secret-string "{\"anthropic_api_key\":\"$$ANTHROPIC_KEY\",\"openai_api_key\":\"$$OPENAI_KEY\"}" && \
-		echo "$(GREEN)LLM API key configured!$(RESET)"; \
+			--secret-string "{\"anthropic_api_key\":\"$$ANTHROPIC_KEY\",\"anthropic_admin_api_key\":\"$$ANTHROPIC_ADMIN_KEY\",\"openai_api_key\":\"$$OPENAI_KEY\"}" && \
+		echo "$(GREEN)LLM API key configured!$(RESET)" && \
+		if [ -n "$$ANTHROPIC_ADMIN_KEY" ]; then \
+			echo "$(GREEN)✓ Anthropic Admin API key configured (Claude cost collection enabled)$(RESET)"; \
+		fi; \
 	else \
 		echo "" && \
 		echo "$(YELLOW)No LLM API key found in .env$(RESET)" && \
@@ -382,6 +466,14 @@ test-budget-critical: ## Send a test budget critical alert (100% threshold)
 	echo ""
 
 ##@ Data Management
+
+clear-snapshots: ## Clear recent snapshots from DynamoDB (dry-run by default)
+	@echo "$(BLUE)Clearing snapshots from last $(BACKFILL_DAYS) days...$(RESET)"
+	@python3 scripts/clear_snapshots.py --env $(ENV) --days $(BACKFILL_DAYS)
+
+clear-snapshots-execute: ## Actually delete snapshots (use with caution!)
+	@echo "$(YELLOW)Deleting snapshots from last $(BACKFILL_DAYS) days...$(RESET)"
+	@python3 scripts/clear_snapshots.py --env $(ENV) --days $(BACKFILL_DAYS) --execute
 
 backfill: ## Backfill historical cost data (BACKFILL_DAYS=30)
 	@echo "$(BLUE)Backfilling $(BACKFILL_DAYS) days of historical cost data...$(RESET)"

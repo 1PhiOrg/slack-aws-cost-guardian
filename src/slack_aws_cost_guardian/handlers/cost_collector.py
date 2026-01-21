@@ -18,8 +18,10 @@ import boto3
 
 from slack_aws_cost_guardian.analysis.anomaly_detector import AnomalyDetector, DetectedAnomaly
 from slack_aws_cost_guardian.analysis.report_builder import build_daily_summary, build_weekly_summary
+from slack_aws_cost_guardian.collectors.anthropic_costs import AnthropicCostCollector
 from slack_aws_cost_guardian.collectors.aws_budgets import BudgetsCollector
 from slack_aws_cost_guardian.collectors.aws_cost_explorer import CostExplorerCollector
+from slack_aws_cost_guardian.collectors.base import CostData
 from slack_aws_cost_guardian.config import load_config, load_guardian_context
 from slack_aws_cost_guardian.llm import LLMClient, SYSTEM_PROMPT
 from slack_aws_cost_guardian.notifications.slack.formatter import SlackFormatter
@@ -137,18 +139,32 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     elif skip_llm:
         print("[SKIP] LLM analysis disabled")
 
-    # Collect cost data
+    # Collect cost data from AWS
     print("Collecting cost data from AWS Cost Explorer...")
     cost_data = cost_explorer.collect(
         lookback_days=config.collection.sources.cost_explorer.lookback_days
     )
-    print(f"Collected costs: ${cost_data.total_cost:.2f} total across {len(cost_data.cost_by_service)} services")
+    print(f"Collected AWS costs: ${cost_data.total_cost:.2f} total across {len(cost_data.cost_by_service)} services")
+
+    # Collect Anthropic costs if enabled
+    anthropic_data: CostData | None = None
+    if config.collection.sources.anthropic.enabled:
+        print("Collecting Anthropic API costs...")
+        anthropic_data = _collect_anthropic_costs(config)
+        if anthropic_data and anthropic_data.total_cost > 0:
+            print(f"Collected Anthropic costs: ${anthropic_data.total_cost:.2f} across {len(anthropic_data.cost_by_service)} services")
+        else:
+            print("No Anthropic costs found or collection failed")
 
     if test_mode:
-        print("\nTop 5 services by cost:")
+        print("\nTop 5 AWS services by cost:")
         sorted_services = sorted(cost_data.cost_by_service.items(), key=lambda x: x[1], reverse=True)
         for service, cost in sorted_services[:5]:
             print(f"  - {service}: ${cost:.2f}")
+        if anthropic_data and anthropic_data.cost_by_service:
+            print("\nAnthropic services:")
+            for service, cost in anthropic_data.cost_by_service.items():
+                print(f"  - {service}: ${cost:.2f}")
 
     # Collect budget information
     budget_info = None
@@ -167,9 +183,10 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         else:
             print("No budgets found")
 
-    # Create snapshot
+    # Merge costs from all providers and create snapshot
     print("Creating cost snapshot...")
-    snapshot = _create_snapshot(cost_data, budget_info, config.environment)
+    merged_cost_data = _merge_provider_costs(cost_data, anthropic_data)
+    snapshot = _create_snapshot(merged_cost_data, budget_info, config.environment)
 
     # Store snapshot (unless skip_storage)
     if not skip_storage:
@@ -648,10 +665,11 @@ def _handle_backfill(
     test_mode: bool,
 ) -> dict[str, Any]:
     """
-    Backfill historical cost data from AWS Cost Explorer.
+    Backfill historical cost data from AWS Cost Explorer and optionally Anthropic.
 
     Queries Cost Explorer for daily costs over the specified period
-    and creates snapshots for each day.
+    and creates snapshots for each day. If Anthropic collection is enabled,
+    also backfills Anthropic costs and merges them into the snapshots.
 
     Args:
         days: Number of days to backfill.
@@ -703,6 +721,11 @@ def _handle_backfill(
             "body": {"error": str(e)},
         }
 
+    # Collect Anthropic historical costs if enabled
+    anthropic_daily_costs: dict[str, dict[str, float]] = {}
+    if config.collection.sources.anthropic.enabled:
+        anthropic_daily_costs = _backfill_anthropic_costs(config, start_date, end_date)
+
     # Process results and create snapshots
     snapshots_created = 0
     snapshots_skipped = 0
@@ -717,7 +740,7 @@ def _handle_backfill(
             snapshots_skipped += 1
             continue
 
-        # Build cost by service dict
+        # Build cost by service dict from AWS
         cost_by_service = {}
         total_cost = 0.0
 
@@ -725,6 +748,13 @@ def _handle_backfill(
             service_name = group["Keys"][0]
             cost = float(group["Metrics"]["UnblendedCost"]["Amount"])
             if cost > 0.001:  # Skip near-zero costs
+                cost_by_service[service_name] = cost
+                total_cost += cost
+
+        # Merge Anthropic costs for this date if available
+        if period_start in anthropic_daily_costs:
+            anthropic_costs = anthropic_daily_costs[period_start]
+            for service_name, cost in anthropic_costs.items():
                 cost_by_service[service_name] = cost
                 total_cost += cost
 
@@ -752,7 +782,13 @@ def _handle_backfill(
 
         storage.put_snapshot(snapshot)
         snapshots_created += 1
-        print(f"  {period_start}: ${total_cost:.2f} ({len(cost_by_service)} services)")
+
+        # Show Claude costs separately in output if present
+        claude_total = sum(c for s, c in cost_by_service.items() if s.startswith("Claude::"))
+        if claude_total > 0:
+            print(f"  {period_start}: ${total_cost:.2f} ({len(cost_by_service)} services, incl ${claude_total:.2f} Claude)")
+        else:
+            print(f"  {period_start}: ${total_cost:.2f} ({len(cost_by_service)} services)")
 
     # Summary
     result = {
@@ -763,12 +799,128 @@ def _handle_backfill(
             "date_range": f"{start_date} to {end_date}",
             "snapshots_created": snapshots_created,
             "snapshots_skipped": snapshots_skipped,
+            "anthropic_enabled": config.collection.sources.anthropic.enabled,
             "test_mode": test_mode,
         },
     }
 
     print(f"\nBackfill completed: {json.dumps(result['body'], indent=2)}")
     return result
+
+
+def _backfill_anthropic_costs(
+    config: Any,
+    start_date: Any,
+    end_date: Any,
+) -> dict[str, dict[str, float]]:
+    """
+    Backfill Anthropic costs for a date range.
+
+    Args:
+        config: Application configuration.
+        start_date: Start date for backfill.
+        end_date: End date for backfill.
+
+    Returns:
+        Dict mapping date strings to cost_by_service dicts.
+        Example: {"2025-01-15": {"Claude::Token Usage": 5.23}}
+    """
+    from decimal import Decimal
+    import httpx
+
+    print(f"Querying Anthropic Cost API for {start_date} to {end_date}...")
+
+    llm_secret_name = os.environ.get("LLM_SECRET_NAME")
+    if not llm_secret_name:
+        print("Warning: LLM_SECRET_NAME not set, skipping Anthropic backfill")
+        return {}
+
+    try:
+        # Get the admin API key from Secrets Manager
+        secrets_client = boto3.client("secretsmanager", region_name=config.aws.region)
+        secret_response = secrets_client.get_secret_value(SecretId=llm_secret_name)
+        secrets = json.loads(secret_response["SecretString"])
+
+        admin_api_key = secrets.get(config.collection.sources.anthropic.admin_api_key_secret_key)
+        if not admin_api_key:
+            print("Warning: Anthropic admin API key not found, skipping backfill")
+            return {}
+
+        # Query Anthropic Cost API with pagination support
+        base_params = {
+            "starting_at": f"{start_date.isoformat()}T00:00:00Z",
+            "ending_at": f"{end_date.isoformat()}T00:00:00Z",
+        }
+
+        headers = {
+            "anthropic-version": "2023-06-01",
+            "x-api-key": admin_api_key,
+        }
+
+        # Parse into daily costs by service
+        daily_costs: dict[str, dict[str, float]] = {}
+
+        with httpx.Client(timeout=30.0) as client:
+            next_page = None
+            page_count = 0
+
+            while True:
+                page_count += 1
+                params = dict(base_params)
+                if next_page:
+                    params["page"] = next_page
+
+                response = client.get(
+                    "https://api.anthropic.com/v1/organizations/cost_report",
+                    params=params,
+                    headers=headers,
+                )
+                response.raise_for_status()
+                data = response.json()
+
+                for bucket in data.get("data", []):
+                    # Field is "starting_at" not "bucket_start_time"
+                    bucket_date = bucket.get("starting_at", "")[:10]  # YYYY-MM-DD
+                    if not bucket_date:
+                        continue
+
+                    if bucket_date not in daily_costs:
+                        daily_costs[bucket_date] = {}
+
+                    for item in bucket.get("results", []):
+                        # Amount is in CENTS - convert to dollars
+                        cost_cents = float(Decimal(str(item.get("amount", "0"))))
+                        cost_dollars = cost_cents / 100
+
+                        if cost_dollars >= 0.005:
+                            # Use description, model, or fallback
+                            description = item.get("description") or item.get("model") or "API Usage"
+                            service_name = f"Claude::{description}"
+                            # Accumulate if same service
+                            if service_name in daily_costs[bucket_date]:
+                                daily_costs[bucket_date][service_name] += cost_dollars
+                            else:
+                                daily_costs[bucket_date][service_name] = cost_dollars
+
+                # Check for more pages
+                if data.get("has_more") and data.get("next_page"):
+                    next_page = data["next_page"]
+                else:
+                    break
+
+            if page_count > 1:
+                print(f"  Fetched {page_count} pages from Anthropic API")
+
+        anthropic_total = sum(
+            sum(services.values()) for services in daily_costs.values()
+        )
+        print(f"Found Anthropic costs for {len(daily_costs)} days (${anthropic_total:.2f} total)")
+
+        return daily_costs
+
+    except Exception as e:
+        print(f"Error backfilling Anthropic costs: {e}")
+        return {}
 
 
 def _check_and_send_budget_alert(
@@ -980,3 +1132,90 @@ Focus on actionable steps. Do not repeat the numbers."""
     except Exception as e:
         print(f"Budget recommendation generation failed: {e}")
         return None
+
+
+def _collect_anthropic_costs(config: Any) -> CostData | None:
+    """
+    Collect costs from Anthropic API.
+
+    Args:
+        config: Application configuration.
+
+    Returns:
+        CostData with Anthropic costs, or None if collection fails.
+    """
+    llm_secret_name = os.environ.get("LLM_SECRET_NAME")
+    if not llm_secret_name:
+        print("Warning: LLM_SECRET_NAME not set, cannot collect Anthropic costs")
+        return None
+
+    try:
+        # Get the admin API key from Secrets Manager
+        secrets_client = boto3.client("secretsmanager", region_name=config.aws.region)
+        secret_response = secrets_client.get_secret_value(SecretId=llm_secret_name)
+        secrets = json.loads(secret_response["SecretString"])
+
+        admin_api_key = secrets.get(config.collection.sources.anthropic.admin_api_key_secret_key)
+        if not admin_api_key:
+            print(
+                f"Warning: Anthropic admin API key not found in secrets "
+                f"(key: {config.collection.sources.anthropic.admin_api_key_secret_key})"
+            )
+            return None
+
+        # Collect costs
+        with AnthropicCostCollector(admin_api_key=admin_api_key) as collector:
+            return collector.collect(
+                lookback_days=config.collection.sources.cost_explorer.lookback_days
+            )
+
+    except Exception as e:
+        print(f"Error collecting Anthropic costs: {e}")
+        return None
+
+
+def _merge_provider_costs(
+    aws_data: CostData,
+    anthropic_data: CostData | None,
+) -> CostData:
+    """
+    Merge costs from multiple providers into a unified CostData object.
+
+    Anthropic services are prefixed with "Claude::" to distinguish them
+    from AWS services in the cost breakdown.
+
+    Args:
+        aws_data: Cost data from AWS Cost Explorer.
+        anthropic_data: Cost data from Anthropic (optional).
+
+    Returns:
+        Merged CostData with all provider costs.
+    """
+    # Start with AWS data
+    merged_cost_by_service = dict(aws_data.cost_by_service)
+    total_cost = aws_data.total_cost
+
+    # Add Anthropic costs if available
+    if anthropic_data and anthropic_data.total_cost > 0:
+        total_cost += anthropic_data.total_cost
+        # Anthropic services are already prefixed with "Claude::" in the collector
+        merged_cost_by_service.update(anthropic_data.cost_by_service)
+
+    # Create merged CostData
+    # Note: We keep AWS's daily_costs for trend analysis since that's the primary cost driver
+    # In the future, we could merge daily_costs from multiple providers
+    return CostData(
+        start_date=aws_data.start_date,
+        end_date=aws_data.end_date,
+        collection_timestamp=aws_data.collection_timestamp,
+        account_id=aws_data.account_id,
+        total_cost=round(total_cost, 2),
+        currency=aws_data.currency,
+        cost_by_service=merged_cost_by_service,
+        cost_by_account=aws_data.cost_by_account,
+        daily_costs=aws_data.daily_costs,
+        budgets=aws_data.budgets,
+        forecast=aws_data.forecast,
+        trend=aws_data.trend,
+        average_daily_cost=aws_data.average_daily_cost,
+    )
