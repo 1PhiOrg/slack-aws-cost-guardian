@@ -26,11 +26,23 @@ class BudgetsSourceConfig(BaseModel):
     enabled: bool = True
 
 
+class AnthropicCostSourceConfig(BaseModel):
+    """Anthropic API cost collection configuration.
+
+    Requires an Anthropic Organization account and Admin API key.
+    See: https://platform.claude.com/docs/en/build-with-claude/usage-cost-api
+    """
+
+    enabled: bool = False  # Disabled by default, requires org account
+    admin_api_key_secret_key: str = "anthropic_admin_api_key"  # Key within LLM secrets
+
+
 class CollectionSourcesConfig(BaseModel):
     """Cost collection data sources."""
 
     cost_explorer: CostExplorerSourceConfig = Field(default_factory=CostExplorerSourceConfig)
     budgets: BudgetsSourceConfig = Field(default_factory=BudgetsSourceConfig)
+    anthropic: AnthropicCostSourceConfig = Field(default_factory=AnthropicCostSourceConfig)
 
 
 class RetentionConfig(BaseModel):

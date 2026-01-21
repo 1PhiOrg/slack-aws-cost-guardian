@@ -37,6 +37,10 @@ class CollectorStack(Stack):
         schedule_hours: list[int] | None = None,
         daily_report_hour_utc: int = 14,  # 6am PST = 14:00 UTC
         weekly_report_hour_utc: int = 14,  # 6am PST = 14:00 UTC
+        anthropic_costs_enabled: bool = False,
+        version: str = "0.0.0",
+        git_commit: str = "unknown",
+        deploy_timestamp: str = "",
         **kwargs,
     ) -> None:
         """
@@ -51,6 +55,10 @@ class CollectorStack(Stack):
             schedule_hours: UTC hours to run collection (default: [6, 12, 18, 0]).
             daily_report_hour_utc: UTC hour for daily report (default: 14 = 6am PST).
             weekly_report_hour_utc: UTC hour for weekly Monday report (default: 14 = 6am PST).
+            anthropic_costs_enabled: Enable Anthropic API cost collection (default: False).
+            version: Application version from VERSION file.
+            git_commit: Git commit hash for traceability.
+            deploy_timestamp: Timestamp of deployment.
         """
         super().__init__(scope, construct_id, **kwargs)
 
@@ -58,6 +66,10 @@ class CollectorStack(Stack):
         self.schedule_hours = schedule_hours or [6, 12, 18, 0]
         self.daily_report_hour_utc = daily_report_hour_utc
         self.weekly_report_hour_utc = weekly_report_hour_utc
+        self.anthropic_costs_enabled = anthropic_costs_enabled
+        self.version = version
+        self.git_commit = git_commit
+        self.deploy_timestamp = deploy_timestamp
 
         # Create the Slack webhook secret (user must populate after deployment)
         self.slack_secret = self._create_slack_secret()
@@ -156,6 +168,10 @@ class CollectorStack(Stack):
                 "SLACK_SECRET_NAME": self.slack_secret.secret_name,
                 "LLM_SECRET_NAME": self.llm_secret.secret_name,
                 "CONFIG_ENV": self.deploy_env,
+                "ANTHROPIC_COSTS_ENABLED": str(self.anthropic_costs_enabled).lower(),
+                "APP_VERSION": self.version,
+                "GIT_COMMIT": self.git_commit,
+                "DEPLOY_TIMESTAMP": self.deploy_timestamp,
             },
             description="Collects AWS cost data, detects anomalies, and sends notifications",
         )
