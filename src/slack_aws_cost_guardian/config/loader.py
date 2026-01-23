@@ -96,6 +96,7 @@ def _apply_env_overrides(config_data: dict) -> dict:
         "LLM_PROVIDER": ("llm", "provider"),
         "MONTHLY_BUDGET": ("budgets", "monthly", "amount"),
         "SLACK_ENABLED": ("slack", "enabled"),
+        "ANTHROPIC_COSTS_ENABLED": ("collection", "sources", "anthropic", "enabled"),
     }
 
     for env_var, path in env_mappings.items():

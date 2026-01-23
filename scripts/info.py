@@ -24,6 +24,15 @@ DIM = "\033[2m"
 
 
 @dataclass
+class VersionInfo:
+    local_version: str
+    deployed_version: str | None
+    git_commit: str
+    deployed_commit: str | None
+    deploy_timestamp: str | None
+
+
+@dataclass
 class EnvironmentInfo:
     account_id: str
     region: str
@@ -55,9 +64,11 @@ class SlackInfo:
 
 @dataclass
 class SecretsInfo:
-    slack_secret_name: str
-    slack_configured: bool
-    llm_secret_name: str
+    config_secret_name: str
+    webhook_critical_configured: bool
+    webhook_heartbeat_configured: bool
+    signing_secret_configured: bool
+    bot_token_configured: bool
     anthropic_configured: bool
     openai_configured: bool
 
@@ -184,6 +195,56 @@ class CostGuardianInfo:
             print(f"{YELLOW}Warning: Could not get environment info: {e}{RESET}")
             return None
 
+    def get_version_info(self) -> VersionInfo | None:
+        """Get version information from local file and deployed Lambda."""
+        try:
+            import subprocess
+
+            # Get local version
+            version_file = Path(__file__).parent.parent / "VERSION"
+            local_version = version_file.read_text().strip() if version_file.exists() else "0.0.0"
+
+            # Get local git commit
+            try:
+                result = subprocess.run(
+                    ["git", "rev-parse", "--short", "HEAD"],
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                    cwd=Path(__file__).parent.parent,
+                )
+                git_commit = result.stdout.strip()
+            except Exception:
+                git_commit = "unknown"
+
+            # Get deployed version from Lambda env vars
+            deployed_version = None
+            deployed_commit = None
+            deploy_timestamp = None
+
+            func_name = f"cost-guardian-collector-{self.env}"
+            try:
+                response = self.lambda_client.get_function_configuration(
+                    FunctionName=func_name
+                )
+                env_vars = response.get("Environment", {}).get("Variables", {})
+                deployed_version = env_vars.get("APP_VERSION")
+                deployed_commit = env_vars.get("GIT_COMMIT")
+                deploy_timestamp = env_vars.get("DEPLOY_TIMESTAMP")
+            except ClientError:
+                pass
+
+            return VersionInfo(
+                local_version=local_version,
+                deployed_version=deployed_version,
+                git_commit=git_commit,
+                deployed_commit=deployed_commit,
+                deploy_timestamp=deploy_timestamp,
+            )
+        except Exception as e:
+            print(f"{YELLOW}Warning: Could not get version info: {e}{RESET}")
+            return None
+
     def get_lambda_info(self) -> list[LambdaInfo]:
         """Get Lambda function information."""
         lambdas = []
@@ -239,9 +300,9 @@ class CostGuardianInfo:
                 f"CostGuardianCallback-{self.env}", "CallbackUrl"
             )
 
-            # Get webhook secrets
+            # Get secrets from consolidated config secret
             secret_arn = self._get_cf_output(
-                f"CostGuardianCollector-{self.env}", "SlackSecretArn"
+                f"CostGuardianCollector-{self.env}", "ConfigSecretArn"
             )
 
             webhook_critical = None
@@ -274,49 +335,51 @@ class CostGuardianInfo:
             return None
 
     def get_secrets_info(self) -> SecretsInfo | None:
-        """Get secrets configuration status."""
+        """Get secrets configuration status from consolidated config secret."""
         try:
-            slack_secret_arn = self._get_cf_output(
-                f"CostGuardianCollector-{self.env}", "SlackSecretArn"
-            )
-            llm_secret_arn = self._get_cf_output(
-                f"CostGuardianCollector-{self.env}", "LLMSecretArn"
+            config_secret_arn = self._get_cf_output(
+                f"CostGuardianCollector-{self.env}", "ConfigSecretArn"
             )
 
-            slack_configured = False
+            webhook_critical_configured = False
+            webhook_heartbeat_configured = False
+            signing_secret_configured = False
+            bot_token_configured = False
             anthropic_configured = False
             openai_configured = False
 
-            if slack_secret_arn:
+            if config_secret_arn:
                 try:
                     secret_response = self.secrets_client.get_secret_value(
-                        SecretId=slack_secret_arn
+                        SecretId=config_secret_arn
                     )
                     secret_data = json.loads(secret_response["SecretString"])
-                    webhook = secret_data.get("webhook_url_critical", "")
-                    slack_configured = bool(webhook and "YOUR" not in webhook)
-                except ClientError:
-                    pass
 
-            if llm_secret_arn:
-                try:
-                    secret_response = self.secrets_client.get_secret_value(
-                        SecretId=llm_secret_arn
-                    )
-                    secret_data = json.loads(secret_response["SecretString"])
+                    # Check Slack configuration
+                    webhook_critical = secret_data.get("webhook_url_critical", "")
+                    webhook_critical_configured = bool(webhook_critical and "YOUR" not in webhook_critical)
+                    webhook_heartbeat = secret_data.get("webhook_url_heartbeat", "")
+                    webhook_heartbeat_configured = bool(webhook_heartbeat and "YOUR" not in webhook_heartbeat)
+                    signing_secret = secret_data.get("signing_secret", "")
+                    signing_secret_configured = bool(signing_secret and signing_secret.strip())
+                    bot_token = secret_data.get("bot_token", "")
+                    bot_token_configured = bool(bot_token and bot_token.strip())
+
+                    # Check LLM configuration
                     anthropic_configured = bool(secret_data.get("anthropic_api_key"))
                     openai_configured = bool(secret_data.get("openai_api_key"))
                 except ClientError:
                     pass
 
-            # Extract secret names from ARNs
-            slack_name = slack_secret_arn.split(":")[-1] if slack_secret_arn else "Not found"
-            llm_name = llm_secret_arn.split(":")[-1] if llm_secret_arn else "Not found"
+            # Extract secret name from ARN
+            config_name = config_secret_arn.split(":")[-1] if config_secret_arn else "Not found"
 
             return SecretsInfo(
-                slack_secret_name=slack_name,
-                slack_configured=slack_configured,
-                llm_secret_name=llm_name,
+                config_secret_name=config_name,
+                webhook_critical_configured=webhook_critical_configured,
+                webhook_heartbeat_configured=webhook_heartbeat_configured,
+                signing_secret_configured=signing_secret_configured,
+                bot_token_configured=bot_token_configured,
                 anthropic_configured=anthropic_configured,
                 openai_configured=openai_configured,
             )
@@ -567,6 +630,7 @@ class CostGuardianInfo:
     def collect_all(self) -> dict[str, Any]:
         """Collect all info sections."""
         return {
+            "version": self.get_version_info(),
             "environment": self.get_environment_info(),
             "lambdas": self.get_lambda_info(),
             "slack": self.get_slack_info(),
@@ -581,8 +645,29 @@ class CostGuardianInfo:
 
     def print_formatted(self, data: dict[str, Any]) -> None:
         """Print colored, formatted output."""
-        print(f"\n{BLUE}{BOLD}Cost Guardian Info ({self.env}){RESET}")
-        print("=" * 40)
+        # Version info in header
+        version_info = data.get("version")
+        if version_info:
+            local_ver = version_info.local_version
+            deployed_ver = version_info.deployed_version or "not deployed"
+            print(f"\n{BLUE}{BOLD}Cost Guardian v{local_ver} ({self.env}){RESET}")
+            print("=" * 40)
+
+            print(f"\n{BOLD}VERSION{RESET}")
+            print(f"  Local:    v{local_ver} ({version_info.git_commit})")
+            if version_info.deployed_version:
+                # Check if deployed matches local
+                if version_info.deployed_version == local_ver and version_info.deployed_commit == version_info.git_commit:
+                    print(f"  Deployed: v{version_info.deployed_version} ({version_info.deployed_commit}) {GREEN}✓ current{RESET}")
+                else:
+                    print(f"  Deployed: v{version_info.deployed_version} ({version_info.deployed_commit}) {YELLOW}← needs deploy{RESET}")
+                if version_info.deploy_timestamp:
+                    print(f"  Deployed: {version_info.deploy_timestamp}")
+            else:
+                print(f"  Deployed: {YELLOW}Not deployed yet{RESET}")
+        else:
+            print(f"\n{BLUE}{BOLD}Cost Guardian Info ({self.env}){RESET}")
+            print("=" * 40)
 
         # Environment
         env_info = data.get("environment")
@@ -628,14 +713,21 @@ class CostGuardianInfo:
         secrets_info = data.get("secrets")
         print(f"\n{BOLD}SECRETS MANAGER{RESET}")
         if secrets_info:
-            slack_status = f"{GREEN}Configured{RESET}" if secrets_info.slack_configured else f"{YELLOW}Not configured{RESET}"
-            print(f"  Slack Secret: {secrets_info.slack_secret_name}")
-            print(f"    Status: {slack_status}")
-            print(f"  LLM Secret: {secrets_info.llm_secret_name}")
+            print(f"  Config Secret: {secrets_info.config_secret_name}")
+            # Slack keys
+            webhook_critical_status = f"{GREEN}Configured{RESET}" if secrets_info.webhook_critical_configured else f"{YELLOW}Not configured{RESET}"
+            webhook_heartbeat_status = f"{GREEN}Configured{RESET}" if secrets_info.webhook_heartbeat_configured else f"{YELLOW}Not configured{RESET}"
+            signing_status = f"{GREEN}Configured{RESET}" if secrets_info.signing_secret_configured else f"{DIM}Not configured{RESET}"
+            bot_token_status = f"{GREEN}Configured{RESET}" if secrets_info.bot_token_configured else f"{DIM}Not configured{RESET}"
+            print(f"    webhook_url_critical: {webhook_critical_status}")
+            print(f"    webhook_url_heartbeat: {webhook_heartbeat_status}")
+            print(f"    signing_secret: {signing_status}")
+            print(f"    bot_token: {bot_token_status}")
+            # LLM keys
             anthropic_status = f"{GREEN}Configured{RESET}" if secrets_info.anthropic_configured else f"{DIM}Not configured{RESET}"
             openai_status = f"{GREEN}Configured{RESET}" if secrets_info.openai_configured else f"{DIM}Not configured{RESET}"
-            print(f"    Anthropic: {anthropic_status}")
-            print(f"    OpenAI: {openai_status}")
+            print(f"    anthropic_api_key: {anthropic_status}")
+            print(f"    openai_api_key: {openai_status}")
         else:
             print(f"  {YELLOW}Could not retrieve secrets info{RESET}")
 

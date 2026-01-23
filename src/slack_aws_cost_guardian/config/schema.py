@@ -18,6 +18,9 @@ class CostExplorerSourceConfig(BaseModel):
     enabled: bool = True
     granularity: Literal["DAILY", "HOURLY"] = "DAILY"
     lookback_days: int = Field(default=14, ge=1, le=90)
+    # Cost data lag: how many days to wait for data to fully populate
+    # AWS Cost Explorer data takes 24-48 hours to become accurate
+    cost_data_lag_days: int = Field(default=2, ge=1, le=7)
 
 
 class BudgetsSourceConfig(BaseModel):
@@ -26,11 +29,23 @@ class BudgetsSourceConfig(BaseModel):
     enabled: bool = True
 
 
+class AnthropicCostSourceConfig(BaseModel):
+    """Anthropic API cost collection configuration.
+
+    Requires an Anthropic Organization account and Admin API key.
+    See: https://platform.claude.com/docs/en/build-with-claude/usage-cost-api
+    """
+
+    enabled: bool = False  # Disabled by default, requires org account
+    admin_api_key_secret_key: str = "anthropic_admin_api_key"  # Key within LLM secrets
+
+
 class CollectionSourcesConfig(BaseModel):
     """Cost collection data sources."""
 
     cost_explorer: CostExplorerSourceConfig = Field(default_factory=CostExplorerSourceConfig)
     budgets: BudgetsSourceConfig = Field(default_factory=BudgetsSourceConfig)
+    anthropic: AnthropicCostSourceConfig = Field(default_factory=AnthropicCostSourceConfig)
 
 
 class RetentionConfig(BaseModel):

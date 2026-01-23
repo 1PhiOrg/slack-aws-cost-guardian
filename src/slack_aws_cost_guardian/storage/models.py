@@ -59,14 +59,26 @@ class CostSnapshot(BaseModel):
     DynamoDB Key Structure:
     - PK: SNAPSHOT#{date} (e.g., "SNAPSHOT#2024-01-15")
     - SK: HOUR#{hour}#{account_id} (e.g., "HOUR#14#123456789012")
+
+    Multi-provider support:
+    - provider field identifies the cost source (aws, anthropic, etc.)
+    - Defaults to "aws" for backward compatibility with existing data
     """
 
     snapshot_id: str = Field(default_factory=_generate_uuid)
     timestamp: str = Field(default_factory=_utc_now_iso)
     account_id: str
-    date: str  # YYYY-MM-DD
+    date: str  # YYYY-MM-DD - when the snapshot was taken
     hour: int = Field(ge=0, le=23)
     period_type: Literal["hourly", "daily", "weekly"] = "daily"
+
+    # The date the cost_by_service data actually represents
+    # (may differ from snapshot date due to cost_data_lag_days setting)
+    cost_data_date: str | None = None  # YYYY-MM-DD
+
+    # Provider identification for multi-service support
+    # Defaults to "aws" for backward compatibility
+    provider: Literal["aws", "anthropic", "openai", "databricks"] = "aws"
 
     total_cost: float
     currency: str = "USD"
@@ -101,10 +113,14 @@ class CostSnapshot(BaseModel):
             "date": self.date,
             "hour": self.hour,
             "period_type": self.period_type,
+            "provider": self.provider,  # Multi-provider support
             "total_cost": str(self.total_cost),  # DynamoDB Number from string
             "currency": self.currency,
             "cost_by_service": {k: str(v) for k, v in self.cost_by_service.items()},
         }
+
+        if self.cost_data_date:
+            item["cost_data_date"] = self.cost_data_date
 
         if self.cost_by_account:
             item["cost_by_account"] = {
@@ -195,6 +211,8 @@ class CostSnapshot(BaseModel):
             date=item["date"],
             hour=int(item["hour"]),
             period_type=item.get("period_type", "daily"),
+            provider=item.get("provider", "aws"),  # Default to aws for backward compat
+            cost_data_date=item.get("cost_data_date"),  # May be None for old snapshots
             total_cost=float(item["total_cost"]),
             currency=item.get("currency", "USD"),
             cost_by_service=cost_by_service,

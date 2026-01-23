@@ -37,6 +37,10 @@ class CollectorStack(Stack):
         schedule_hours: list[int] | None = None,
         daily_report_hour_utc: int = 14,  # 6am PST = 14:00 UTC
         weekly_report_hour_utc: int = 14,  # 6am PST = 14:00 UTC
+        anthropic_costs_enabled: bool = False,
+        version: str = "0.0.0",
+        git_commit: str = "unknown",
+        deploy_timestamp: str = "",
         **kwargs,
     ) -> None:
         """
@@ -51,6 +55,10 @@ class CollectorStack(Stack):
             schedule_hours: UTC hours to run collection (default: [6, 12, 18, 0]).
             daily_report_hour_utc: UTC hour for daily report (default: 14 = 6am PST).
             weekly_report_hour_utc: UTC hour for weekly Monday report (default: 14 = 6am PST).
+            anthropic_costs_enabled: Enable Anthropic API cost collection (default: False).
+            version: Application version from VERSION file.
+            git_commit: Git commit hash for traceability.
+            deploy_timestamp: Timestamp of deployment.
         """
         super().__init__(scope, construct_id, **kwargs)
 
@@ -58,12 +66,13 @@ class CollectorStack(Stack):
         self.schedule_hours = schedule_hours or [6, 12, 18, 0]
         self.daily_report_hour_utc = daily_report_hour_utc
         self.weekly_report_hour_utc = weekly_report_hour_utc
+        self.anthropic_costs_enabled = anthropic_costs_enabled
+        self.version = version
+        self.git_commit = git_commit
+        self.deploy_timestamp = deploy_timestamp
 
-        # Create the Slack webhook secret (user must populate after deployment)
-        self.slack_secret = self._create_slack_secret()
-
-        # Create the LLM API key secret (user must populate after deployment)
-        self.llm_secret = self._create_llm_secret()
+        # Create the unified config secret (user must populate after deployment)
+        self.config_secret = self._create_config_secret()
 
         # Create the Lambda function
         self.collector_function = self._create_collector_lambda(
@@ -81,28 +90,21 @@ class CollectorStack(Stack):
         self._create_schedule()
         self._create_report_schedules()
 
-    def _create_slack_secret(self) -> secretsmanager.Secret:
-        """Create the Secrets Manager secret for Slack webhooks."""
-        return secretsmanager.Secret(
-            self,
-            "SlackSecret",
-            secret_name=f"cost-guardian/{self.deploy_env}/slack",
-            description="Slack webhook URLs for Cost Guardian notifications",
-            generate_secret_string=secretsmanager.SecretStringGenerator(
-                secret_string_template='{"webhook_url_critical":"","webhook_url_heartbeat":""}',
-                generate_string_key="placeholder",  # Not used, just required
-            ),
+    def _create_config_secret(self) -> secretsmanager.Secret:
+        """Create the unified Secrets Manager secret for all app configuration."""
+        # Template contains all configuration keys
+        template = (
+            '{"webhook_url_critical":"","webhook_url_heartbeat":"",'
+            '"signing_secret":"","bot_token":"",'
+            '"anthropic_api_key":"","anthropic_admin_api_key":"","openai_api_key":""}'
         )
-
-    def _create_llm_secret(self) -> secretsmanager.Secret:
-        """Create the Secrets Manager secret for LLM API keys."""
         return secretsmanager.Secret(
             self,
-            "LLMSecret",
-            secret_name=f"cost-guardian/{self.deploy_env}/llm",
-            description="LLM API keys for Cost Guardian AI analysis",
+            "ConfigSecret",
+            secret_name=f"cost-guardian/{self.deploy_env}/config",
+            description="Configuration and API keys for Cost Guardian",
             generate_secret_string=secretsmanager.SecretStringGenerator(
-                secret_string_template='{"anthropic_api_key":"","openai_api_key":""}',
+                secret_string_template=template,
                 generate_string_key="placeholder",  # Not used, just required
             ),
         )
@@ -153,9 +155,12 @@ class CollectorStack(Stack):
             environment={
                 "TABLE_NAME": table.table_name,
                 "CONFIG_BUCKET": config_bucket.bucket_name,
-                "SLACK_SECRET_NAME": self.slack_secret.secret_name,
-                "LLM_SECRET_NAME": self.llm_secret.secret_name,
+                "CONFIG_SECRET_NAME": self.config_secret.secret_name,
                 "CONFIG_ENV": self.deploy_env,
+                "ANTHROPIC_COSTS_ENABLED": str(self.anthropic_costs_enabled).lower(),
+                "APP_VERSION": self.version,
+                "GIT_COMMIT": self.git_commit,
+                "DEPLOY_TIMESTAMP": self.deploy_timestamp,
             },
             description="Collects AWS cost data, detects anomalies, and sends notifications",
         )
@@ -173,8 +178,7 @@ class CollectorStack(Stack):
         config_bucket.grant_read(self.collector_function)
 
         # Secrets Manager permissions
-        self.slack_secret.grant_read(self.collector_function)
-        self.llm_secret.grant_read(self.collector_function)
+        self.config_secret.grant_read(self.collector_function)
 
         # Cost Explorer permissions
         self.collector_function.add_to_role_policy(
@@ -274,11 +278,6 @@ class CollectorStack(Stack):
         return self.collector_function.function_arn
 
     @property
-    def slack_secret_arn(self) -> str:
-        """Get the Slack secret ARN."""
-        return self.slack_secret.secret_arn
-
-    @property
-    def llm_secret_arn(self) -> str:
-        """Get the LLM secret ARN."""
-        return self.llm_secret.secret_arn
+    def config_secret_arn(self) -> str:
+        """Get the config secret ARN."""
+        return self.config_secret.secret_arn
