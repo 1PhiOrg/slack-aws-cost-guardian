@@ -69,24 +69,50 @@ def create_cost_tools(
             start = _parse_date(start_date)
             end = _parse_date(end_date) if end_date else start
 
-            # For single day queries, try DynamoDB cache first
-            if storage and start == end:
-                snapshots = storage.get_snapshots_for_date(start.isoformat())
-                if account_id:
-                    snapshots = [s for s in snapshots if s.account_id == account_id]
+            # Try DynamoDB cache first (includes Anthropic costs)
+            if storage:
+                aggregated_by_service: dict[str, float] = {}
+                daily_breakdown: list[dict[str, Any]] = []
+                total_cost = 0.0
+                days_found = 0
 
-                if snapshots:
-                    # Use the latest snapshot for the day
-                    snapshot = max(snapshots, key=lambda s: s.hour)
-                    return {
-                        "date": snapshot.date,
-                        "total_cost": snapshot.total_cost,
+                current = start
+                while current <= end:
+                    snapshots = storage.get_snapshots_for_date(current.isoformat())
+                    if account_id:
+                        snapshots = [s for s in snapshots if s.account_id == account_id]
+
+                    if snapshots:
+                        snapshot = max(snapshots, key=lambda s: s.hour)
+                        days_found += 1
+                        total_cost += snapshot.total_cost
+                        daily_breakdown.append({
+                            "date": snapshot.date,
+                            "cost": snapshot.total_cost,
+                        })
+                        # Aggregate by service
+                        for svc, cost in snapshot.cost_by_service.items():
+                            aggregated_by_service[svc] = aggregated_by_service.get(svc, 0.0) + cost
+
+                    current += timedelta(days=1)
+
+                # Use cache if we found data for most days
+                expected_days = (end - start).days + 1
+                if days_found >= expected_days * 0.8:  # At least 80% coverage
+                    result: dict[str, Any] = {
+                        "start_date": start.isoformat(),
+                        "end_date": end.isoformat(),
+                        "total_cost": round(total_cost, 2),
                         "currency": "USD",
-                        "by_service": snapshot.cost_by_service,
+                        "by_service": {k: round(v, 2) for k, v in aggregated_by_service.items()},
                         "source": "cache",
+                        "days_included": days_found,
                     }
+                    if len(daily_breakdown) > 1:
+                        result["daily_breakdown"] = sorted(daily_breakdown, key=lambda x: x["date"])
+                    return result
 
-            # Fall back to Cost Explorer
+            # Fall back to Cost Explorer (AWS only, no Anthropic)
             # Add 1 day to end_date for Cost Explorer API (exclusive end)
             cost_data = collector.collect(
                 start_date=start,
@@ -95,13 +121,14 @@ def create_cost_tools(
             )
 
             # Build response
-            result: dict[str, Any] = {
+            result = {
                 "start_date": start.isoformat(),
                 "end_date": end.isoformat(),
                 "total_cost": cost_data.total_cost,
                 "currency": cost_data.currency,
                 "by_service": cost_data.cost_by_service,
                 "source": "cost_explorer",
+                "note": "AWS costs only - Anthropic costs not included in Cost Explorer",
             }
 
             if cost_data.daily_costs:
@@ -238,29 +265,46 @@ def create_cost_tools(
             # Cap limit at 20
             limit = min(limit, 20)
 
-            # Try DynamoDB cache first for single day
-            if storage and start == end:
-                snapshots = storage.get_snapshots_for_date(start.isoformat())
-                if snapshots:
-                    snapshot = max(snapshots, key=lambda s: s.hour)
+            # Try DynamoDB cache first (includes Anthropic costs)
+            if storage:
+                aggregated_by_service: dict[str, float] = {}
+                total_cost = 0.0
+                days_found = 0
+
+                current = start
+                while current <= end:
+                    snapshots = storage.get_snapshots_for_date(current.isoformat())
+                    if snapshots:
+                        snapshot = max(snapshots, key=lambda s: s.hour)
+                        days_found += 1
+                        total_cost += snapshot.total_cost
+                        for svc, cost in snapshot.cost_by_service.items():
+                            aggregated_by_service[svc] = aggregated_by_service.get(svc, 0.0) + cost
+                    current += timedelta(days=1)
+
+                # Use cache if we found data for most days
+                expected_days = (end - start).days + 1
+                if days_found >= expected_days * 0.8:
                     services = [
-                        {"service": svc, "cost": cost}
+                        {"service": svc, "cost": round(cost, 2)}
                         for svc, cost in sorted(
-                            snapshot.cost_by_service.items(),
+                            aggregated_by_service.items(),
                             key=lambda x: x[1],
                             reverse=True,
                         )[:limit]
                     ]
 
                     return {
-                        "date": start.isoformat(),
-                        "total_cost": snapshot.total_cost,
+                        "start_date": start.isoformat(),
+                        "end_date": end.isoformat(),
+                        "total_cost": round(total_cost, 2),
                         "currency": "USD",
                         "top_services": services,
                         "source": "cache",
+                        "days_included": days_found,
                     }
 
-            # Fall back to Cost Explorer
+            # Fall back to Cost Explorer (AWS only, no Anthropic)
             cost_data = collector.collect(
                 start_date=start,
                 end_date=end + timedelta(days=1),
@@ -283,6 +327,7 @@ def create_cost_tools(
                 "currency": "USD",
                 "top_services": services,
                 "source": "cost_explorer",
+                "note": "AWS costs only - Anthropic costs not included in Cost Explorer",
             }
 
         except Exception as e:

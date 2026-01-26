@@ -6,7 +6,7 @@
 # All values shown are defaults unless noted otherwise.
 #
 # Secrets (API keys, webhooks) are stored in AWS Secrets Manager, not here.
-# Run `make configure-secrets` to set up secrets from your .env file.
+# Run `make sync-secrets` to set up secrets from your .env file.
 #
 # =============================================================================
 # COST SUMMARY - What running this tool costs you:
