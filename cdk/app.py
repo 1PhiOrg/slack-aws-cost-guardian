@@ -98,6 +98,8 @@ def main():
     reports_config = config.get("reports", {})
     daily_report_hour = reports_config.get("daily", {}).get("schedule_hour", 14)
     weekly_report_hour = reports_config.get("weekly", {}).get("schedule_hour", 14)
+    daily_report_enabled = reports_config.get("daily", {}).get("enabled", True)
+    weekly_report_enabled = reports_config.get("weekly", {}).get("enabled", True)
 
     # Check if Anthropic cost collection is enabled
     anthropic_costs_enabled = os.environ.get("ANTHROPIC_COSTS_ENABLED", "").lower() in (
@@ -140,6 +142,8 @@ def main():
         schedule_hours=schedule_hours,
         daily_report_hour_utc=daily_report_hour,
         weekly_report_hour_utc=weekly_report_hour,
+        daily_report_enabled=daily_report_enabled,
+        weekly_report_enabled=weekly_report_enabled,
         anthropic_costs_enabled=anthropic_costs_enabled,
         version=version,
         git_commit=git_commit,

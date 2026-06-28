@@ -37,6 +37,8 @@ class CollectorStack(Stack):
         schedule_hours: list[int] | None = None,
         daily_report_hour_utc: int = 14,  # 6am PST = 14:00 UTC
         weekly_report_hour_utc: int = 14,  # 6am PST = 14:00 UTC
+        daily_report_enabled: bool = True,
+        weekly_report_enabled: bool = True,
         anthropic_costs_enabled: bool = False,
         version: str = "0.0.0",
         git_commit: str = "unknown",
@@ -55,6 +57,8 @@ class CollectorStack(Stack):
             schedule_hours: UTC hours to run collection (default: [6, 12, 18, 0]).
             daily_report_hour_utc: UTC hour for daily report (default: 14 = 6am PST).
             weekly_report_hour_utc: UTC hour for weekly Monday report (default: 14 = 6am PST).
+            daily_report_enabled: Create the daily report schedule (default: True).
+            weekly_report_enabled: Create the weekly report schedule (default: True).
             anthropic_costs_enabled: Enable Anthropic API cost collection (default: False).
             version: Application version from VERSION file.
             git_commit: Git commit hash for traceability.
@@ -66,6 +70,8 @@ class CollectorStack(Stack):
         self.schedule_hours = schedule_hours or [6, 12, 18, 0]
         self.daily_report_hour_utc = daily_report_hour_utc
         self.weekly_report_hour_utc = weekly_report_hour_utc
+        self.daily_report_enabled = daily_report_enabled
+        self.weekly_report_enabled = weekly_report_enabled
         self.anthropic_costs_enabled = anthropic_costs_enabled
         self.version = version
         self.git_commit = git_commit
@@ -236,41 +242,43 @@ class CollectorStack(Stack):
     def _create_report_schedules(self) -> None:
         """Create EventBridge schedules for daily and weekly reports."""
         # Daily report schedule (every day at configured hour)
-        daily_rule = events.Rule(
-            self,
-            "DailyReportSchedule",
-            rule_name=f"cost-guardian-daily-report-{self.deploy_env}",
-            description=f"Trigger daily cost report at {self.daily_report_hour_utc:02d}:00 UTC",
-            schedule=events.Schedule.cron(
-                minute="0",
-                hour=str(self.daily_report_hour_utc),
-            ),
-        )
-        daily_rule.add_target(
-            targets.LambdaFunction(
-                self.collector_function,
-                event=events.RuleTargetInput.from_object({"report_type": "daily"}),
+        if self.daily_report_enabled:
+            daily_rule = events.Rule(
+                self,
+                "DailyReportSchedule",
+                rule_name=f"cost-guardian-daily-report-{self.deploy_env}",
+                description=f"Trigger daily cost report at {self.daily_report_hour_utc:02d}:00 UTC",
+                schedule=events.Schedule.cron(
+                    minute="0",
+                    hour=str(self.daily_report_hour_utc),
+                ),
             )
-        )
+            daily_rule.add_target(
+                targets.LambdaFunction(
+                    self.collector_function,
+                    event=events.RuleTargetInput.from_object({"report_type": "daily"}),
+                )
+            )
 
         # Weekly report schedule (Monday at configured hour)
-        weekly_rule = events.Rule(
-            self,
-            "WeeklyReportSchedule",
-            rule_name=f"cost-guardian-weekly-report-{self.deploy_env}",
-            description=f"Trigger weekly cost report on Monday at {self.weekly_report_hour_utc:02d}:00 UTC",
-            schedule=events.Schedule.cron(
-                minute="0",
-                hour=str(self.weekly_report_hour_utc),
-                week_day="MON",
-            ),
-        )
-        weekly_rule.add_target(
-            targets.LambdaFunction(
-                self.collector_function,
-                event=events.RuleTargetInput.from_object({"report_type": "weekly"}),
+        if self.weekly_report_enabled:
+            weekly_rule = events.Rule(
+                self,
+                "WeeklyReportSchedule",
+                rule_name=f"cost-guardian-weekly-report-{self.deploy_env}",
+                description=f"Trigger weekly cost report on Monday at {self.weekly_report_hour_utc:02d}:00 UTC",
+                schedule=events.Schedule.cron(
+                    minute="0",
+                    hour=str(self.weekly_report_hour_utc),
+                    week_day="MON",
+                ),
             )
-        )
+            weekly_rule.add_target(
+                targets.LambdaFunction(
+                    self.collector_function,
+                    event=events.RuleTargetInput.from_object({"report_type": "weekly"}),
+                )
+            )
 
     @property
     def function_arn(self) -> str:
