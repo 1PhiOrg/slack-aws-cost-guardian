@@ -549,10 +549,10 @@ validate: ## Verify deployment is correctly configured
 	echo "" && \
 	echo "$(BOLD)Checking EventBridge schedules...$(RESET)" && \
 	SCHEDULE_COUNT=$$(aws events list-rules --name-prefix "cost-guardian" --query 'length(Rules)' --output text 2>/dev/null) && \
-	if [ "$$SCHEDULE_COUNT" -ge 3 ] 2>/dev/null; then \
+	if [ "$$SCHEDULE_COUNT" -ge 2 ] 2>/dev/null; then \
 		echo "  $(GREEN)✓ EventBridge schedules active ($$SCHEDULE_COUNT rules)$(RESET)"; \
 	else \
-		echo "  $(YELLOW)✗ EventBridge schedules missing or incomplete$(RESET)" && \
+		echo "  $(YELLOW)✗ EventBridge schedules missing or incomplete (expected >=2: collection + at least one report)$(RESET)" && \
 		ERRORS=$$((ERRORS + 1)); \
 	fi && \
 	\
