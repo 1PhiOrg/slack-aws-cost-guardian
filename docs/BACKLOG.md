@@ -64,6 +64,24 @@ Extended tool library for deep cost investigation.
 
 ---
 
+### Two-Layer Learning Memory ([#23](https://github.com/danjamk/slack-aws-cost-guardian/issues/23))
+File-based memory that lets Cost Guardian learn from interactions (alert feedback, Slack-thread decisions) and carry that learning into future assessments. No vector database — the "brain" pattern (folders + frontmatter + links + an index the model walks).
+
+**Two layers:**
+- **Hot memory** — single `MEMORY#HOT` DynamoDB item, read on every anomaly check, injected as an override/addendum to `config/guardian-context.md`. Kept lean by a curator (no rotation).
+- **Deep memory** — OKF-style `memory/` directory in S3 (one concept per file, frontmatter, wiki-links, `INDEX.md`), navigated only during conversations.
+
+**Build plan:** P0 hot plumbing · P1 the curator (learns from feedback — the headline) · P2 deep store · P3 conversation path · P4 context expansion via MCP.
+
+**Dependencies:**
+- P0–P2 are **unblocked** — they stand on existing infra (`FEEDBACK#` capture, `CHANGE#`, EventBridge, the DynamoDB table, the S3 context loader).
+- P3 and P4 **depend on [#3](https://github.com/danjamk/slack-aws-cost-guardian/issues/3)** (thread-based conversations + DynamoDB conversation state).
+- [#18](https://github.com/danjamk/slack-aws-cost-guardian/issues/18) is adjacent: CloudTrail "what changed?" is the AWS-native complement to P4's MCP code/issue context.
+
+Full design + draft prompts: [`docs/MEMORY-SYSTEM.md`](MEMORY-SYSTEM.md)
+
+---
+
 ### AWS Budgets Integration ([#2](https://github.com/danjamk/slack-aws-cost-guardian/issues/2))
 Integrate with AWS Budgets API to leverage existing budget configurations and alerts.
 
