@@ -26,23 +26,20 @@ Users can now @mention the bot or send DMs to ask cost questions:
 
 ---
 
-#### Phase 2: Thread-based Alert Investigation ([#3](https://github.com/danjamk/slack-aws-cost-guardian/issues/3))
-Enable interactive, multi-turn conversations in Slack threads for deeper cost investigation.
+#### Phase 2: Thread-based Alert Investigation - DELIVERED ([#3](https://github.com/danjamk/slack-aws-cost-guardian/issues/3))
 
-**Example flow:**
-1. Alert: "EC2 cost spike detected: +$150 (+45%)"
-2. User clicks "Investigate" button
-3. Bot responds in thread with context
-4. User asks follow-up: "What caused the spike?"
-5. Bot uses tools to answer with CloudTrail data, trends, etc.
+**Status:** Delivered as part of the learning-memory work. Multi-turn threaded
+conversations, DynamoDB conversation state, and thread-aware handling shipped; the
+bot now carries context across a Slack thread/DM and answers follow-ups with cost
+tools + learned memory.
 
-**Key deliverables:**
-- "Investigate" button on anomaly alerts
-- Conversation state management in DynamoDB
-- Multi-turn context handling in LLM
+**Delivered:**
+- Conversation state management in DynamoDB (`CONVO#` items, TTL)
+- Multi-turn context handling in the LLM tool-use loop
 - Thread-aware event handling
 
-**Prerequisite:** Phase 1 complete
+**Remaining (split out):** the "Investigate" button on anomaly alerts is tracked
+separately as [#24](https://github.com/danjamk/slack-aws-cost-guardian/issues/24).
 
 ---
 
@@ -61,6 +58,43 @@ Extended tool library for deep cost investigation.
 - "Compare this week to last week"
 
 **Prerequisites:** Phase 1 complete; Phase 2 recommended
+
+---
+
+### Two-Layer Learning Memory - DELIVERED ([#23](https://github.com/danjamk/slack-aws-cost-guardian/issues/23))
+
+**Status:** P0–P3b shipped and validated end-to-end. Cost Guardian learns from
+alert feedback and plain-English conversation, remembers durable facts (hot +
+deep memory), and applies them to every future check. File-based, no vector DB.
+
+**Delivered:**
+- **Hot memory** — `MEMORY#HOT` DynamoDB item, injected into every anomaly check.
+- **Deep memory** — OKF-style `memory/` concept files + `INDEX.md` in S3.
+- **Curator** — event-driven consolidation (feedback / changes / "remember"
+  requests) with a watermark gate; weekly gated backstop.
+- **Bot reads memory** (navigation tools) and **writes it** (`remember_fact`).
+- **Model** default updated to `claude-sonnet-4-6`.
+
+**Remaining (split out):** P4 — context expansion via MCP — is tracked as
+[#25](https://github.com/danjamk/slack-aws-cost-guardian/issues/25).
+
+Design: [`docs/MEMORY-SYSTEM.md`](MEMORY-SYSTEM.md)
+
+---
+
+### Investigate Button on Alerts ([#24](https://github.com/danjamk/slack-aws-cost-guardian/issues/24))
+Add an "Investigate" button to anomaly alerts that opens a threaded investigation
+(now cheap — multi-turn threads landed with the memory work). The remaining UX
+piece of the original #3. See [`docs/MEMORY-SYSTEM.md`](MEMORY-SYSTEM.md) (P3b).
+
+---
+
+### Context Expansion via MCP — P4 ([#25](https://github.com/danjamk/slack-aws-cost-guardian/issues/25))
+Let the conversation bot reach live external context (GitHub code/issues, then any
+hosted MCP as a config slot) via the Messages API MCP connector, to explain cost
+changes. Conversation-path only. [#18](https://github.com/danjamk/slack-aws-cost-guardian/issues/18)
+(CloudTrail "what changed?") is the AWS-native complement. Design:
+[`docs/MEMORY-SYSTEM.md`](MEMORY-SYSTEM.md) (Phase 4).
 
 ---
 
@@ -185,3 +219,8 @@ User-defined alerting beyond standard anomaly detection.
   - @mention and DM support
   - LLM tool-use for cost queries
   - Provider-separated cost display (AWS vs Claude)
+- [x] **Interactive Bot - Phase 2**: Multi-turn threaded conversations ([#3](https://github.com/danjamk/slack-aws-cost-guardian/issues/3))
+  - Conversation state in DynamoDB; thread-aware, context-carrying answers
+- [x] **Two-Layer Learning Memory** (P0–P3b) ([#23](https://github.com/danjamk/slack-aws-cost-guardian/issues/23))
+  - Hot + deep memory, event-driven curator, bot read/write of learned facts
+  - See [`docs/MEMORY-SYSTEM.md`](MEMORY-SYSTEM.md)

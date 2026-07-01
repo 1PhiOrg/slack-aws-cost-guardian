@@ -7,6 +7,7 @@ from aws_cdk import (
     Duration,
     Stack,
     aws_dynamodb as dynamodb,
+    aws_iam as iam,
     aws_lambda as lambda_,
     aws_secretsmanager as secretsmanager,
 )
@@ -56,6 +57,17 @@ class CallbackStack(Stack):
         # Grant permissions
         table.grant_read_write_data(self.callback_function)
         config_secret.grant_read(self.callback_function)
+
+        # Allow async-invoking the collector to run the memory curator on feedback
+        self.callback_function.add_to_role_policy(
+            iam.PolicyStatement(
+                actions=["lambda:InvokeFunction"],
+                resources=[
+                    f"arn:aws:lambda:{self.region}:{self.account}:function:"
+                    f"cost-guardian-collector-{environment}"
+                ],
+            )
+        )
 
         # Create Function URL (public - security via signature verification)
         self.function_url = self.callback_function.add_function_url(
@@ -116,6 +128,7 @@ class CallbackStack(Stack):
             environment={
                 "TABLE_NAME": table.table_name,
                 "CONFIG_SECRET_NAME": config_secret.secret_name,
+                "COLLECTOR_FUNCTION_NAME": f"cost-guardian-collector-{self.deploy_env}",
             },
             description="Handles Slack interactive button clicks for feedback",
         )

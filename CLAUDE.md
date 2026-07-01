@@ -38,6 +38,7 @@ The project uses semantic versioning stored in the `VERSION` file.
 
 ## Key Files
 - `docs/ARCHITECTURE.md` - Technical reference (DynamoDB schema, IAM, secrets)
+- `docs/MEMORY-SYSTEM.md` - Learning-memory design and internals
 - `docs/BACKLOG.md` - Future features and roadmap
 - `src/slack_aws_cost_guardian/` - Main Python package
 - `cdk/` - CDK infrastructure code
@@ -103,5 +104,8 @@ All core features implemented:
 - Daily and weekly summary reports
 - Budget threshold alerts (80%/100%)
 - Historical data backfill
+- Conversational bot (@mention/DM, multi-turn threads, tool-use)
+- Learning memory (hot + deep) with an event-driven curator - learns from
+  feedback and conversation, applied to every check (see `docs/MEMORY-SYSTEM.md`)
 
 See `docs/BACKLOG.md` for future enhancements.

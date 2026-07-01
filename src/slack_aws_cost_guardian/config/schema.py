@@ -123,7 +123,7 @@ class AnomalyDetectionConfig(BaseModel):
 class AnthropicConfig(BaseModel):
     """Anthropic API configuration."""
 
-    model_id: str = "claude-sonnet-4-20250514"
+    model_id: str = "claude-sonnet-4-6"
     # api_key loaded from Secrets Manager
 
 

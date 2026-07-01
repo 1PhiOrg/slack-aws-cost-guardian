@@ -225,3 +225,6 @@ cdk.context.json
 GIT-COMMIT-MSG.md
 GIT-PULLREQUEST-MSG.md
 reference/
+
+# Personal config (use config.example.yaml as the template)
+config/config.yaml

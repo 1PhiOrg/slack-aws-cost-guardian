@@ -16,7 +16,8 @@ Detect spending anomalies, track budgets, and get intelligent analysis delivered
 - **Interactive Slack Alerts** - Acknowledge costs as expected/unexpected directly from Slack
 - **Budget Threshold Alerts** - Warnings at 80% and critical alerts at 100% of budget
 - **AI Analysis** - Claude or GPT explains what's driving cost changes
-- **@mention Bot** - Ask questions like `@guardian what did we spend yesterday?`
+- **Learning Memory** - Learns from your feedback and conversations, remembers durable facts about your infrastructure (accepted baselines, known patterns), and applies them to every future check - so it stops re-flagging things you've already accepted. See [docs/MEMORY-SYSTEM.md](docs/MEMORY-SYSTEM.md).
+- **Conversational Bot** - @mention or DM it (`@guardian what did we spend yesterday?`); it holds multi-turn context in a thread, consults learned memory, and can save facts on request (`@guardian remember that Cost Explorer costs are expected`).
 
 ## Quick Start
 
@@ -41,36 +42,35 @@ make validate
 
 ## How It Works
 
-```
-┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│   EventBridge   │────▶│     Lambda      │────▶│  Cost Explorer  │
-│   (scheduled)   │     │   (collector)   │     │      API        │
-└─────────────────┘     └────────┬────────┘     └─────────────────┘
-                                 │
-                                 ▼
-                        ┌─────────────────┐
-                        │    DynamoDB     │
-                        │   (snapshots)   │
-                        └────────┬────────┘
-                                 │
-                    ┌────────────┴────────────┐
-                    ▼                         ▼
-           ┌─────────────────┐       ┌─────────────────┐
-           │ Anomaly Detect  │       │   LLM Analysis  │
-           └────────┬────────┘       └────────┬────────┘
-                    │                         │
-                    └────────────┬────────────┘
-                                 ▼
-                        ┌─────────────────┐
-                        │  Slack Alert    │◀───── User Feedback
-                        │  (with buttons) │
-                        └─────────────────┘
+```mermaid
+flowchart TD
+    EB["EventBridge (schedules)"] --> COL["Collector Lambda"]
+    COL --> CE["Cost Explorer & Budgets"]
+    COL --> DET["Anomaly detection + AI analysis"]
+    DET --> ALERT["Slack alert (feedback buttons)"]
 
-┌─────────────────┐     ┌─────────────────┐
-│  Slack @mention │────▶│  Events Lambda  │────▶ Bot Response
-│    or DM        │     │  (with tools)   │
-└─────────────────┘     └─────────────────┘
+    USER["Slack @mention / DM"] --> BOT["Events Lambda (bot: cost + memory tools)"]
+
+    ALERT -- "expected / unexpected" --> CB["Callback Lambda"]
+    CB -- "trigger" --> CUR["Curator (LLM)"]
+    BOT -- "remember_fact" --> CUR
+    CUR --> HOT[("Hot memory")]
+    CUR --> DEEP[("Deep memory (S3)")]
+
+    HOT -. "injected into every check" .-> DET
+    DEEP -. "consulted when answering" .-> BOT
+
+    classDef mem fill:#eef2ff,stroke:#6677aa,color:#223344;
+    class HOT,DEEP,CUR mem;
 ```
+
+The dotted arrows are the **learning loop**: alert feedback and "remember this"
+conversations feed a curator that writes two layers of memory, which are then
+applied back to every future check (hot memory) and every bot answer (deep memory).
+
+You click "expected" on an alert, or tell the bot to remember something in plain
+English, and the guardian folds it into memory and stops flagging it. Full design:
+[docs/MEMORY-SYSTEM.md](docs/MEMORY-SYSTEM.md).
 
 ## Cost to Run
 
@@ -114,6 +114,7 @@ make update-context
 
 - **[Setup Guide](docs/SETUP.md)** - Complete installation and configuration
 - **[Architecture](docs/ARCHITECTURE.md)** - Technical reference and data models
+- **[Memory System](docs/MEMORY-SYSTEM.md)** - How learning memory works (design + internals)
 - **[Backlog](docs/BACKLOG.md)** - Roadmap and planned features
 
 ## Common Commands
@@ -125,6 +126,14 @@ make validate          # Verify configuration
 make test-daily        # Send daily report
 make logs              # Tail collector logs
 make logs-events       # Tail bot logs
+
+# Learning memory
+make show-memory       # Show current hot memory
+make list-memory       # List deep-memory concepts + index
+make set-memory TEXT="..."   # Seed a hot-memory fact
+make clear-memory      # Clear hot memory
+make test-curate       # Dry-run the curator (no writes)
+make run-curator       # Run the curator now
 ```
 
 ## License

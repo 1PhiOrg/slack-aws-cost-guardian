@@ -383,6 +383,81 @@ test-weekly: ## Send a weekly summary report to Slack
 	cat /tmp/collector-response.json | python3 -m json.tool && \
 	echo ""
 
+show-memory: ## Show the current hot learning memory
+	@echo "$(BLUE)Fetching hot memory...$(RESET)"
+	@FUNCTION_NAME="cost-guardian-collector-$(ENV)" && \
+	aws lambda invoke \
+		--function-name "$$FUNCTION_NAME" \
+		--payload '{"memory_action": "show"}' \
+		--cli-binary-format raw-in-base64-out \
+		--output text /tmp/collector-response.json >/dev/null && \
+	cat /tmp/collector-response.json | python3 -m json.tool && \
+	echo ""
+
+set-memory: ## Set hot learning memory (usage: make set-memory TEXT="...")
+	@echo "$(BLUE)Setting hot memory...$(RESET)"
+	@FUNCTION_NAME="cost-guardian-collector-$(ENV)" && \
+	python3 -c "import json,sys; json.dump({'memory_action':'set','memory_text':sys.argv[1]}, open('/tmp/cg-memory-payload.json','w'))" "$(TEXT)" && \
+	aws lambda invoke \
+		--function-name "$$FUNCTION_NAME" \
+		--payload file:///tmp/cg-memory-payload.json \
+		--cli-binary-format raw-in-base64-out \
+		--output text /tmp/collector-response.json >/dev/null && \
+	cat /tmp/collector-response.json | python3 -m json.tool && \
+	echo ""
+
+clear-memory: ## Clear the hot learning memory
+	@echo "$(BLUE)Clearing hot memory...$(RESET)"
+	@FUNCTION_NAME="cost-guardian-collector-$(ENV)" && \
+	aws lambda invoke \
+		--function-name "$$FUNCTION_NAME" \
+		--payload '{"memory_action": "clear"}' \
+		--cli-binary-format raw-in-base64-out \
+		--output text /tmp/collector-response.json >/dev/null && \
+	cat /tmp/collector-response.json | python3 -m json.tool && \
+	echo ""
+
+list-memory: ## List deep-memory concepts and show INDEX.md
+	@echo "$(BLUE)Fetching deep memory...$(RESET)"
+	@FUNCTION_NAME="cost-guardian-collector-$(ENV)" && \
+	aws lambda invoke \
+		--function-name "$$FUNCTION_NAME" \
+		--payload '{"memory_action": "list"}' \
+		--cli-binary-format raw-in-base64-out \
+		--output text /tmp/collector-response.json >/dev/null && \
+	cat /tmp/collector-response.json | python3 -m json.tool && \
+	echo ""
+
+test-curate: ## Run the memory curator in dry-run (computes, does not write)
+	@echo "$(BLUE)Running curator (dry-run)...$(RESET)"
+	@FUNCTION_NAME="cost-guardian-collector-$(ENV)" && \
+	aws lambda invoke \
+		--function-name "$$FUNCTION_NAME" \
+		--payload '{"curate": true, "test_mode": true, "dry_run": true, "force": true}' \
+		--cli-binary-format raw-in-base64-out \
+		--log-type Tail \
+		--query 'LogResult' \
+		--output text /tmp/collector-response.json | base64 -d && \
+	echo "" && \
+	echo "$(GREEN)Response:$(RESET)" && \
+	cat /tmp/collector-response.json | python3 -m json.tool && \
+	echo ""
+
+run-curator: ## Run the memory curator for real (rewrites hot memory)
+	@echo "$(BLUE)Running curator...$(RESET)"
+	@FUNCTION_NAME="cost-guardian-collector-$(ENV)" && \
+	aws lambda invoke \
+		--function-name "$$FUNCTION_NAME" \
+		--payload '{"curate": true, "test_mode": true, "force": true}' \
+		--cli-binary-format raw-in-base64-out \
+		--log-type Tail \
+		--query 'LogResult' \
+		--output text /tmp/collector-response.json | base64 -d && \
+	echo "" && \
+	echo "$(GREEN)Response:$(RESET)" && \
+	cat /tmp/collector-response.json | python3 -m json.tool && \
+	echo ""
+
 test-budget-warning: ## Send a test budget warning alert (80% threshold)
 	@echo "$(BLUE)Sending test budget warning alert...$(RESET)"
 	@FUNCTION_NAME="cost-guardian-collector-$(ENV)" && \
@@ -549,10 +624,10 @@ validate: ## Verify deployment is correctly configured
 	echo "" && \
 	echo "$(BOLD)Checking EventBridge schedules...$(RESET)" && \
 	SCHEDULE_COUNT=$$(aws events list-rules --name-prefix "cost-guardian" --query 'length(Rules)' --output text 2>/dev/null) && \
-	if [ "$$SCHEDULE_COUNT" -ge 3 ] 2>/dev/null; then \
+	if [ "$$SCHEDULE_COUNT" -ge 2 ] 2>/dev/null; then \
 		echo "  $(GREEN)✓ EventBridge schedules active ($$SCHEDULE_COUNT rules)$(RESET)"; \
 	else \
-		echo "  $(YELLOW)✗ EventBridge schedules missing or incomplete$(RESET)" && \
+		echo "  $(YELLOW)✗ EventBridge schedules missing or incomplete (expected >=2: collection + at least one report)$(RESET)" && \
 		ERRORS=$$((ERRORS + 1)); \
 	fi && \
 	\

@@ -17,13 +17,28 @@ Use these tools to answer questions about:
 - Cost trends over time
 - Account-level cost allocation
 
+You also have access to LEARNED MEMORY: durable facts about this user's
+infrastructure captured from their feedback on past alerts (accepted baselines,
+known patterns, decisions about what is/isn't worth worrying about). Consult it
+when it would improve your answer - use list_memory to see what's known,
+search_memory to find relevant concepts, and read_memory_concept to read one.
+Prefer these learned facts over generic assumptions, and cite them when relevant
+(e.g. "you previously marked this as expected").
+
+When the user asks you to remember something ("remember this", "note that X is
+expected", etc.), use the remember_fact tool: distill the durable fact from the
+conversation into a clear self-contained statement and save it. Confirm what you
+saved. Do not claim you cannot write to memory - you can, via remember_fact.
+
 When answering:
 1. Use the appropriate tool(s) to fetch the data needed
-2. Present costs clearly with currency (USD)
-3. Provide context when helpful (comparisons to averages, trends)
-4. Keep responses concise but informative
-5. Look for "Claude::" prefixed services when asked about Anthropic/Claude costs
-6. If you can't answer a question with the available tools, explain what information you'd need
+2. Consult learned memory when the question touches something the user may have
+   given feedback on before
+3. Present costs clearly with currency (USD)
+4. Provide context when helpful (comparisons to averages, trends)
+5. Keep responses concise but informative
+6. Look for "Claude::" prefixed services when asked about Anthropic/Claude costs
+7. If you can't answer a question with the available tools, explain what information you'd need
 
 Format costs as: $X.XX (e.g., $142.50)
 Format percentages as: X% (e.g., 15%)
@@ -117,6 +132,62 @@ COST_TOOLS: list[LLMTool] = [
                 },
             },
             "required": ["start_date"],
+        },
+    ),
+]
+
+# Learned-memory navigation tools (P3a). Registered alongside COST_TOOLS when the
+# bot has a deep-memory store available.
+MEMORY_TOOLS: list[LLMTool] = [
+    LLMTool(
+        name="list_memory",
+        description="List all learned-memory concepts and show the index. Use this first to see what durable facts have been captured about this user's infrastructure.",
+        parameters={"type": "object", "properties": {}},
+    ),
+    LLMTool(
+        name="search_memory",
+        description="Search learned memory for concepts relevant to a topic (service name, keyword, pattern). Returns matching concepts with excerpts.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Keyword or phrase to search for (e.g. a service name like 'NAT' or a topic like 'baseline').",
+                },
+            },
+            "required": ["query"],
+        },
+    ),
+    LLMTool(
+        name="read_memory_concept",
+        description="Read the full contents of one learned-memory concept file by its path (as returned by list_memory or search_memory).",
+        parameters={
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Concept path, e.g. 'services/nat-gateway-baseline.md'.",
+                },
+            },
+            "required": ["path"],
+        },
+    ),
+    LLMTool(
+        name="remember_fact",
+        description="Save a durable fact to memory when the user asks you to remember something (e.g. 'remember this', 'note that X is expected'). Distill the fact from the conversation into a clear, self-contained statement. The fact is folded into memory by the curator and will inform future cost assessments.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "summary": {
+                    "type": "string",
+                    "description": "The durable fact to remember, as a clear self-contained statement (e.g. 'Cost Explorer charges ~$0.05/week from cost-query API usage; this is expected overhead, not an anomaly').",
+                },
+                "why": {
+                    "type": "string",
+                    "description": "Optional short reason/context for why this is true or was decided.",
+                },
+            },
+            "required": ["summary"],
         },
     ),
 ]
