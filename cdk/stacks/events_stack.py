@@ -131,6 +131,7 @@ class EventsStack(Stack):
                 "CONFIG_BUCKET": config_bucket.bucket_name,
                 "CONFIG_SECRET_NAME": config_secret.secret_name,
                 "CONFIG_ENV": self.deploy_env,
+                "COLLECTOR_FUNCTION_NAME": f"cost-guardian-collector-{self.deploy_env}",
             },
             description="Handles Slack @mentions and DMs for cost queries",
         )
@@ -147,6 +148,17 @@ class EventsStack(Stack):
 
         # S3 permissions (read config)
         config_bucket.grant_read(self.events_function)
+
+        # Allow async-invoking the collector to run the curator on remember_fact
+        self.events_function.add_to_role_policy(
+            iam.PolicyStatement(
+                actions=["lambda:InvokeFunction"],
+                resources=[
+                    f"arn:aws:lambda:{self.region}:{self.account}:function:"
+                    f"cost-guardian-collector-{self.deploy_env}"
+                ],
+            )
+        )
 
         # Secrets Manager permissions
         config_secret.grant_read(self.events_function)

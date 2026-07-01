@@ -21,6 +21,11 @@ search_memory to find relevant concepts, and read_memory_concept to read one.
 Prefer these learned facts over generic assumptions, and cite them when relevant
 (e.g. "you previously marked this as expected").
 
+When the user asks you to remember something ("remember this", "note that X is
+expected", etc.), use the remember_fact tool: distill the durable fact from the
+conversation into a clear self-contained statement and save it. Confirm what you
+saved. Do not claim you cannot write to memory - you can, via remember_fact.
+
 When answering:
 1. Use the appropriate tool(s) to fetch the data needed
 2. Consult learned memory when the question touches something the user may have
@@ -160,6 +165,24 @@ MEMORY_TOOLS: list[LLMTool] = [
                 },
             },
             "required": ["path"],
+        },
+    ),
+    LLMTool(
+        name="remember_fact",
+        description="Save a durable fact to memory when the user asks you to remember something (e.g. 'remember this', 'note that X is expected'). Distill the fact from the conversation into a clear, self-contained statement. The fact is folded into memory by the curator and will inform future cost assessments.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "summary": {
+                    "type": "string",
+                    "description": "The durable fact to remember, as a clear self-contained statement (e.g. 'Cost Explorer charges ~$0.05/week from cost-query API usage; this is expected overhead, not an anomaly').",
+                },
+                "why": {
+                    "type": "string",
+                    "description": "Optional short reason/context for why this is true or was decided.",
+                },
+            },
+            "required": ["summary"],
         },
     ),
 ]

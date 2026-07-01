@@ -113,18 +113,26 @@ def test_extract_json_returns_none_on_garbage():
 
 
 class _FakeStorage:
-    def __init__(self, feedback=None, changes=None, hot="", last_curated_at=None):
+    def __init__(self, feedback=None, changes=None, hot="", last_curated_at=None, candidates=None):
         self._feedback = feedback or []
         self._changes = changes or []
+        self._candidates = candidates or []
         self.hot = hot
         self.last_curated_at = last_curated_at
         self.put_calls = []
+        self.deleted_candidates = []
 
     def get_recent_feedback(self, days=30):
         return list(self._feedback)
 
     def get_active_changes(self):
         return list(self._changes)
+
+    def get_pending_candidates(self):
+        return list(self._candidates)
+
+    def delete_candidates(self, candidates):
+        self.deleted_candidates.extend(candidates)
 
     def get_hot_memory(self):
         return self.hot
@@ -367,3 +375,45 @@ def test_deep_unsafe_path_skipped():
     assert deep.writes == {}
     assert result["concepts_written"] == 0
     assert result["concepts_skipped"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Memory candidates (explicit "remember this")
+# ---------------------------------------------------------------------------
+
+
+def _candidate(summary="Cost Explorer ~$0.05/wk is expected overhead", created="2026-07-01T02:30:00Z"):
+    return {"PK": "MEMCANDIDATE#PENDING", "SK": f"TS#{created}#abc", "summary": summary, "why": "", "created": created}
+
+
+def test_candidate_only_signal_runs_curator():
+    # No feedback/changes, but a pending candidate is still signal.
+    storage = _FakeStorage(candidates=[_candidate()], hot="")
+    llm = _FakeLLM(content='{"hot_memory_text": "Cost Explorer overhead is expected", "notes": "n"}')
+    result = MemoryCurator(storage, llm).run()
+    assert result.get("reason") != "no_signal"
+    assert result["candidate_count"] == 1
+    assert result["changed"] is True
+
+
+def test_candidates_consumed_after_success():
+    cand = _candidate()
+    storage = _FakeStorage(candidates=[cand], hot="")
+    llm = _FakeLLM(content='{"hot_memory_text": "x", "notes": "n"}')
+    result = MemoryCurator(storage, llm).run()
+    assert storage.deleted_candidates == [cand]
+    assert result["candidates_consumed"] == 1
+
+
+def test_candidates_not_consumed_on_dry_run():
+    storage = _FakeStorage(candidates=[_candidate()], hot="")
+    llm = _FakeLLM(content='{"hot_memory_text": "x", "notes": "n"}')
+    MemoryCurator(storage, llm).run(dry_run=True)
+    assert storage.deleted_candidates == []
+
+
+def test_candidates_not_consumed_on_llm_error():
+    storage = _FakeStorage(candidates=[_candidate()], hot="")
+    llm = _FakeLLM(raises=True)
+    MemoryCurator(storage, llm).run()
+    assert storage.deleted_candidates == []

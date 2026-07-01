@@ -3,7 +3,10 @@
 import json
 
 from slack_aws_cost_guardian.llm.base import LLMToolCall
-from slack_aws_cost_guardian.llm.tools.memory_tools import register_memory_tools
+from slack_aws_cost_guardian.llm.tools.memory_tools import (
+    register_memory_tools,
+    register_remember_tool,
+)
 from slack_aws_cost_guardian.llm.tools.registry import ToolRegistry
 
 
@@ -92,3 +95,55 @@ def test_empty_memory_returns_gracefully():
     assert err is False
     assert out["concept_count"] == 0
     assert out["concepts"] == []
+
+
+# -- remember_fact ----------------------------------------------------------
+
+
+class _FakeStorage:
+    def __init__(self):
+        self.candidates = []
+
+    def put_memory_candidate(self, summary, why=None, source=None):
+        self.candidates.append({"summary": summary, "why": why, "source": source})
+
+
+def test_remember_fact_records_candidate_and_triggers_curator():
+    storage = _FakeStorage()
+    triggered = []
+    reg = ToolRegistry()
+    register_remember_tool(reg, storage, trigger_curator=lambda: triggered.append(True))
+
+    out, err = _call(reg, "remember_fact", summary="Cost Explorer overhead is expected", why="cost queries")
+    assert err is False
+    assert out["remembered"] is True
+    assert out["curator_triggered"] is True
+    assert storage.candidates == [
+        {"summary": "Cost Explorer overhead is expected", "why": "cost queries", "source": "slack_conversation"}
+    ]
+    assert triggered == [True]
+
+
+def test_remember_fact_without_trigger_still_records():
+    storage = _FakeStorage()
+    reg = ToolRegistry()
+    register_remember_tool(reg, storage, trigger_curator=None)
+    out, _ = _call(reg, "remember_fact", summary="something durable")
+    assert out["remembered"] is True
+    assert out["curator_triggered"] is False
+    assert len(storage.candidates) == 1
+
+
+def test_remember_fact_trigger_failure_is_non_fatal():
+    storage = _FakeStorage()
+    reg = ToolRegistry()
+
+    def boom():
+        raise RuntimeError("invoke failed")
+
+    register_remember_tool(reg, storage, trigger_curator=boom)
+    out, err = _call(reg, "remember_fact", summary="x")
+    assert err is False  # tool still succeeds
+    assert out["remembered"] is True
+    assert out["curator_triggered"] is False
+    assert len(storage.candidates) == 1  # candidate persisted despite trigger failure

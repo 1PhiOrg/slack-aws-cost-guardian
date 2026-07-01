@@ -79,6 +79,15 @@ class _FakeTable:
     def put_item(self, Item):  # noqa: N803
         self.items[self._key(Item)] = dict(Item)
 
+    def query(self, KeyConditionExpression):  # noqa: N803
+        # Supports only Key("PK").eq(value).
+        pk_value = KeyConditionExpression.get_expression()["values"][1]
+        items = [v for (pk, _sk), v in self.items.items() if pk == pk_value]
+        return {"Items": items}
+
+    def batch_writer(self):
+        return _FakeBatchWriter(self)
+
     def update_item(self, Key, UpdateExpression, ExpressionAttributeValues, ReturnValues=None):  # noqa: N803
         item = self.items.setdefault(self._key(Key), dict(Key))
         if "version = if_not_exists(version, :zero) + :one" in UpdateExpression:
@@ -89,6 +98,23 @@ class _FakeTable:
             item["last_curated_at"] = ExpressionAttributeValues[":ts"]
             return {}
         raise AssertionError(f"unexpected UpdateExpression: {UpdateExpression}")
+
+
+class _FakeBatchWriter:
+    def __init__(self, table):
+        self.table = table
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def put_item(self, Item):  # noqa: N803
+        self.table.put_item(Item=Item)
+
+    def delete_item(self, Key):  # noqa: N803
+        self.table.items.pop(self.table._key(Key), None)
 
 
 class _FakeResource:
@@ -145,3 +171,56 @@ def test_watermark_survives_hot_memory_write(storage):
     storage.set_last_curated_at("2026-06-22T08:00:00Z")
     assert storage.get_hot_memory() == "some memory"
     assert storage.get_last_curated_at() == "2026-06-22T08:00:00Z"
+
+
+# ---------------------------------------------------------------------------
+# Conversation state (multi-turn threads)
+# ---------------------------------------------------------------------------
+
+
+def test_conversation_empty_by_default(storage):
+    assert storage.get_conversation("chan:123") == []
+
+
+def test_conversation_round_trip(storage):
+    turns = [
+        {"role": "user", "content": "what did EC2 cost?"},
+        {"role": "assistant", "content": "$42 yesterday"},
+    ]
+    storage.put_conversation("chan:123", turns)
+    assert storage.get_conversation("chan:123") == turns
+
+
+def test_conversation_overwrite_and_isolation(storage):
+    storage.put_conversation("k1", [{"role": "user", "content": "a"}])
+    storage.put_conversation("k1", [{"role": "user", "content": "b"}])
+    storage.put_conversation("k2", [{"role": "user", "content": "other"}])
+    assert storage.get_conversation("k1") == [{"role": "user", "content": "b"}]
+    assert storage.get_conversation("k2") == [{"role": "user", "content": "other"}]
+
+
+# ---------------------------------------------------------------------------
+# Memory candidates ("remember this")
+# ---------------------------------------------------------------------------
+
+
+def test_candidates_empty_by_default(storage):
+    assert storage.get_pending_candidates() == []
+
+
+def test_candidate_put_and_get(storage):
+    storage.put_memory_candidate(summary="X is expected", why="user said so")
+    pending = storage.get_pending_candidates()
+    assert len(pending) == 1
+    assert pending[0]["summary"] == "X is expected"
+    assert pending[0]["why"] == "user said so"
+    assert pending[0]["PK"] == "MEMCANDIDATE#PENDING"
+
+
+def test_candidate_delete(storage):
+    storage.put_memory_candidate(summary="a")
+    storage.put_memory_candidate(summary="b")
+    pending = storage.get_pending_candidates()
+    assert len(pending) == 2
+    storage.delete_candidates(pending)
+    assert storage.get_pending_candidates() == []

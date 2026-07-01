@@ -1,6 +1,9 @@
 """LLM tools for cost queries."""
 
-from slack_aws_cost_guardian.llm.tools.memory_tools import register_memory_tools
+from slack_aws_cost_guardian.llm.tools.memory_tools import (
+    register_memory_tools,
+    register_remember_tool,
+)
 from slack_aws_cost_guardian.llm.tools.registry import ToolRegistry
 from slack_aws_cost_guardian.llm.tools.schemas import (
     COST_QUERY_SYSTEM_PROMPT,
@@ -14,4 +17,5 @@ __all__ = [
     "MEMORY_TOOLS",
     "COST_QUERY_SYSTEM_PROMPT",
     "register_memory_tools",
+    "register_remember_tool",
 ]

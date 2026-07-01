@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Iterator
+from uuid import uuid4
 
 if TYPE_CHECKING:
     from mypy_boto3_dynamodb.service_resource import DynamoDBServiceResource
@@ -387,6 +388,102 @@ class DynamoDBStorage:
             Key=self._HOT_MEMORY_KEY,
             UpdateExpression="SET last_curated_at = :ts",
             ExpressionAttributeValues={":ts": timestamp},
+        )
+
+    # =========================================================================
+    # Memory Candidates (explicit "remember this" from conversations)
+    # =========================================================================
+    #
+    # When a user tells the bot to remember something, it writes a candidate here.
+    # The curator reads pending candidates alongside feedback, folds them into
+    # memory, then deletes them. These are HIGH-priority signal - the user asked
+    # explicitly, so the curator should almost always persist them.
+
+    _CANDIDATE_PK = "MEMCANDIDATE#PENDING"
+
+    def put_memory_candidate(
+        self,
+        summary: str,
+        why: str | None = None,
+        source: str | None = None,
+        ttl_days: int = 30,
+    ) -> None:
+        """Record an explicit user request to remember a fact."""
+        now = datetime.now(UTC)
+        ts = now.strftime("%Y-%m-%dT%H:%M:%S") + "Z"
+        self.table.put_item(
+            Item={
+                "PK": self._CANDIDATE_PK,
+                "SK": f"TS#{ts}#{uuid4()}",
+                "summary": summary,
+                "why": why or "",
+                "source": source or "",
+                "created": ts,
+                "ttl": int(now.timestamp()) + ttl_days * 86400,
+            }
+        )
+
+    def get_pending_candidates(self) -> list[dict]:
+        """Get all pending memory candidates (oldest first)."""
+        response = self.table.query(
+            KeyConditionExpression=Key("PK").eq(self._CANDIDATE_PK)
+        )
+        return response.get("Items", [])
+
+    def delete_candidates(self, candidates: list[dict]) -> None:
+        """Delete consumed candidates by their PK/SK."""
+        with self.table.batch_writer() as batch:
+            for c in candidates:
+                if "PK" in c and "SK" in c:
+                    batch.delete_item(Key={"PK": c["PK"], "SK": c["SK"]})
+
+    # =========================================================================
+    # Conversation State (multi-turn Slack threads)
+    # =========================================================================
+    #
+    # One item per Slack thread (or DM channel) holding the recent turn history
+    # so the bot can carry context across messages. Turns are simplified to
+    # {role, content} text pairs (tool-call internals are not persisted). TTL'd.
+
+    def get_conversation(self, thread_key: str) -> list[dict]:
+        """
+        Get the stored turn history for a conversation.
+
+        Args:
+            thread_key: Stable key for the thread/DM (e.g. "channel:thread_ts").
+
+        Returns:
+            List of {"role", "content"} dicts, oldest first. Empty if none.
+        """
+        response = self.table.get_item(
+            Key={"PK": f"CONVO#{thread_key}", "SK": "STATE"}
+        )
+        item = response.get("Item")
+        return item.get("turns", []) if item else []
+
+    def put_conversation(
+        self,
+        thread_key: str,
+        turns: list[dict],
+        ttl_days: int = 7,
+    ) -> None:
+        """
+        Store the turn history for a conversation (overwrites).
+
+        Args:
+            thread_key: Stable key for the thread/DM.
+            turns: List of {"role", "content"} dicts.
+            ttl_days: Days until the conversation record expires.
+        """
+        now = datetime.now(UTC)
+        self.table.put_item(
+            Item={
+                "PK": f"CONVO#{thread_key}",
+                "SK": "STATE",
+                "turns": turns,
+                "updated_at": now.strftime("%Y-%m-%dT%H:%M:%S") + "Z",
+                "ttl": int(now.timestamp()) + ttl_days * 86400,
+            }
         )
 
     # =========================================================================

@@ -58,6 +58,7 @@ def build_curator_prompt(
     current_hot_memory: str,
     deep_index: str = "",
     deep_concepts: str = "",
+    candidates_summary: str = "",
 ) -> str:
     """
     Build the curator user prompt.
@@ -68,12 +69,23 @@ def build_curator_prompt(
         current_hot_memory: The current hot memory text (may be empty).
         deep_index: Current INDEX.md contents (may be empty).
         deep_concepts: Rendered existing concept files (may be empty).
+        candidates_summary: Explicit "remember this" requests from the user.
     """
     current = current_hot_memory.strip() or "(empty - no hot memory yet)"
     feedback = feedback_summary.strip() or "(no recent feedback)"
     changes = changes_summary.strip() or "(no acknowledged changes)"
     index = deep_index.strip() or "(empty - no deep memory yet)"
     concepts = deep_concepts.strip() or "(no existing concepts)"
+    candidates = candidates_summary.strip()
+
+    candidates_section = ""
+    if candidates:
+        candidates_section = f"""
+## Explicit "remember this" requests (HIGH PRIORITY)
+The user directly asked to remember these. Almost always persist them (into hot
+memory if they should influence every check, otherwise as a deep concept):
+{candidates}
+"""
 
     return f"""Update the memory from the signals below.
 
@@ -91,7 +103,7 @@ def build_curator_prompt(
 
 ## Acknowledged cost changes
 {changes}
-
+{candidates_section}
 Update hot memory (lean, high-signal) and file any durable-but-not-hot facts as \
 deep-memory concept writes, keeping INDEX.md in sync. If nothing durable has \
 changed, return the current hot memory unchanged and no concept writes."""

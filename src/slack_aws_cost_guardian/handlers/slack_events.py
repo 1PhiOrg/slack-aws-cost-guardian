@@ -17,9 +17,13 @@ from typing import Any
 import boto3
 
 from slack_aws_cost_guardian.config.loader import load_config, load_guardian_context
+from slack_aws_cost_guardian.llm.base import LLMMessage
 from slack_aws_cost_guardian.llm.client import LLMClient
 from slack_aws_cost_guardian.llm.tools.cost_tools import create_cost_tools
-from slack_aws_cost_guardian.llm.tools.memory_tools import register_memory_tools
+from slack_aws_cost_guardian.llm.tools.memory_tools import (
+    register_memory_tools,
+    register_remember_tool,
+)
 from slack_aws_cost_guardian.llm.tools.schemas import (
     COST_QUERY_SYSTEM_PROMPT,
     COST_TOOLS,
@@ -240,15 +244,17 @@ def _answer_question(
         config_secret_name = os.environ.get("CONFIG_SECRET_NAME", "")
         region = os.environ.get("AWS_REGION", "us-east-1")
 
+        storage = DynamoDBStorage(table_name) if table_name else None
+
         # Load user context
         guardian_context = None
         if config_bucket:
             guardian_context = load_guardian_context(config_bucket, "config/guardian-context.md")
 
         # Prepend hot learning memory so the bot knows accepted baselines/preferences.
-        if table_name:
+        if storage:
             try:
-                hot_memory = DynamoDBStorage(table_name).get_hot_memory()
+                hot_memory = storage.get_hot_memory()
                 if hot_memory:
                     prefix = (guardian_context or "").rstrip()
                     guardian_context = (
@@ -257,6 +263,18 @@ def _answer_question(
                     ).strip()
             except Exception as e:
                 print(f"Could not load hot memory: {e}")
+
+        # Load prior conversation turns for this thread/DM (multi-turn context).
+        thread_key = f"{channel}:{thread_ts}" if thread_ts else channel
+        stored_turns: list[dict] = []
+        if storage:
+            try:
+                stored_turns = storage.get_conversation(thread_key)
+            except Exception as e:
+                print(f"Could not load conversation history: {e}")
+        history = [LLMMessage(role=t["role"], content=t["content"]) for t in stored_turns]
+        if history:
+            print(f"Loaded {len(history)} prior turns for {thread_key}")
 
         # Initialize LLM client
         config = load_config("config/config.yaml")
@@ -272,8 +290,9 @@ def _answer_question(
             region=region,
         )
         tools = list(COST_TOOLS)
-        if config_bucket:
+        if config_bucket and storage:
             register_memory_tools(tool_registry, DeepMemoryStore(config_bucket))
+            register_remember_tool(tool_registry, storage, _trigger_curator)
             tools = tools + MEMORY_TOOLS
 
         # Get answer from LLM
@@ -283,6 +302,7 @@ def _answer_question(
             tool_registry=tool_registry,
             tools=tools,
             system_prompt=COST_QUERY_SYSTEM_PROMPT,
+            history=history,
         )
 
         if answer:
@@ -291,6 +311,16 @@ def _answer_question(
                 text=answer,
                 thread_ts=thread_ts,
             )
+            # Persist the exchange so follow-ups in this thread have context.
+            if storage:
+                try:
+                    new_turns = stored_turns + [
+                        {"role": "user", "content": question},
+                        {"role": "assistant", "content": answer},
+                    ]
+                    storage.put_conversation(thread_key, new_turns[-20:])
+                except Exception as e:
+                    print(f"Could not save conversation history: {e}")
         else:
             bot.send_message(
                 channel=channel,
@@ -322,6 +352,24 @@ def _extract_question(text: str) -> str:
     # Remove @mentions (format: <@U12345> or <@U12345|username>)
     question = re.sub(r"<@[A-Z0-9]+(\|[^>]+)?>", "", text)
     return question.strip()
+
+
+def _trigger_curator() -> None:
+    """
+    Async-invoke the collector Lambda to run the memory curator after the bot
+    records a 'remember this' candidate, so the fact takes effect promptly. No-op
+    if the target isn't configured.
+    """
+    function_name = os.environ.get("COLLECTOR_FUNCTION_NAME")
+    if not function_name:
+        return
+    client = boto3.client("lambda")
+    client.invoke(
+        FunctionName=function_name,
+        InvocationType="Event",  # async, fire-and-forget
+        Payload=json.dumps({"curate": True}).encode("utf-8"),
+    )
+    print(f"Triggered memory curator via {function_name}")
 
 
 def _get_slack_secret() -> dict[str, str] | None:

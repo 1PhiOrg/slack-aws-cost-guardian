@@ -59,17 +59,34 @@ def summarize_changes(changes: list[ChangeLog], limit: int = 50) -> str:
     return "\n".join(lines)
 
 
+def summarize_candidates(candidates: list[dict]) -> str:
+    """Render explicit 'remember this' candidates for the curator prompt."""
+    if not candidates:
+        return ""
+    lines = []
+    for c in candidates:
+        summary = (c.get("summary") or "").strip()
+        why = (c.get("why") or "").strip()
+        line = f"- {summary}"
+        if why:
+            line += f" (why: {why})"
+        lines.append(line)
+    return "\n".join(lines)
+
+
 def _newest_signal_ts(
     feedback: list[AnomalyFeedback],
     changes: list[ChangeLog],
+    candidates: list[dict] | None = None,
 ) -> str | None:
     """
-    Newest signal timestamp across feedback and changes (ISO-8601, lexically
-    comparable). Used as the curator watermark. Returns None if there is no
-    signal.
+    Newest signal timestamp across feedback, changes, and candidates (ISO-8601,
+    lexically comparable). Used as the curator watermark. Returns None if there
+    is no signal.
     """
     stamps = [f.timestamp for f in feedback if f.timestamp]
     stamps += [c.acknowledged_at for c in changes if getattr(c, "acknowledged_at", None)]
+    stamps += [c.get("created") for c in (candidates or []) if c.get("created")]
     return max(stamps) if stamps else None
 
 
@@ -158,8 +175,9 @@ class MemoryCurator:
         """
         feedback = self.storage.get_recent_feedback(days=self.feedback_days)
         changes = self.storage.get_active_changes()
+        candidates = self.storage.get_pending_candidates()
         current_hot = self.storage.get_hot_memory()
-        newest = _newest_signal_ts(feedback, changes)
+        newest = _newest_signal_ts(feedback, changes, candidates)
         watermark = self.storage.get_last_curated_at()
 
         result: dict[str, Any] = {
@@ -168,11 +186,12 @@ class MemoryCurator:
             "forced": force,
             "feedback_count": len(feedback),
             "changes_count": len(changes),
+            "candidate_count": len(candidates),
             "previous_chars": len(current_hot),
             "watermark": watermark,
         }
 
-        if not feedback and not changes:
+        if not feedback and not changes and not candidates:
             result["reason"] = "no_signal"
             return result
 
@@ -199,6 +218,7 @@ class MemoryCurator:
             current_hot_memory=current_hot,
             deep_index=deep_index,
             deep_concepts=deep_concepts,
+            candidates_summary=summarize_candidates(candidates),
         )
         messages = [
             LLMMessage(role="system", content=CURATOR_SYSTEM_PROMPT),
@@ -256,6 +276,16 @@ class MemoryCurator:
                 result["index_updated"] = index_md is not None
             except Exception as e:  # deep-write failure is non-fatal
                 result["deep_write_error"] = str(e)
+
+        # Candidates were consolidated into memory - delete them so they don't
+        # re-feed on the next pass. (Feedback/changes are governed by the
+        # watermark instead; candidates are one-shot.)
+        if not dry_run and candidates:
+            try:
+                self.storage.delete_candidates(candidates)
+                result["candidates_consumed"] = len(candidates)
+            except Exception as e:
+                result["candidate_delete_error"] = str(e)
 
         # Signal was consolidated - advance the watermark so the next trigger
         # is a cheap no-op until fresh feedback arrives.

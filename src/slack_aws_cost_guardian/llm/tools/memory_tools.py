@@ -9,11 +9,12 @@ write-only through P2, finally gets read. See docs/MEMORY-SYSTEM.md.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
     from slack_aws_cost_guardian.llm.tools.registry import ToolRegistry
     from slack_aws_cost_guardian.storage.deep_memory import DeepMemoryStore
+    from slack_aws_cost_guardian.storage.dynamodb import DynamoDBStorage
 
 
 def register_memory_tools(registry: ToolRegistry, deep_store: DeepMemoryStore) -> None:
@@ -47,3 +48,32 @@ def register_memory_tools(registry: ToolRegistry, deep_store: DeepMemoryStore) -
     registry.register("list_memory", list_memory)
     registry.register("search_memory", search_memory)
     registry.register("read_memory_concept", read_memory_concept)
+
+
+def register_remember_tool(
+    registry: ToolRegistry,
+    storage: DynamoDBStorage,
+    trigger_curator: Callable[[], None] | None = None,
+) -> None:
+    """
+    Register the remember_fact tool (P3b-C - the write side of conversation).
+
+    When the user asks the bot to remember something, it records a candidate that
+    the curator will fold into memory. If trigger_curator is provided, it fires
+    the curator immediately so the fact takes effect without waiting for the
+    scheduled backstop.
+    """
+
+    def remember_fact(summary: str, why: str | None = None) -> dict[str, Any]:
+        """Record a durable fact the user asked to remember."""
+        storage.put_memory_candidate(
+            summary=summary, why=why, source="slack_conversation"
+        )
+        if trigger_curator is not None:
+            try:
+                trigger_curator()
+            except Exception as e:  # non-fatal - the backstop will still consume it
+                return {"remembered": True, "summary": summary, "curator_triggered": False, "note": str(e)}
+        return {"remembered": True, "summary": summary, "curator_triggered": trigger_curator is not None}
+
+    registry.register("remember_fact", remember_fact)

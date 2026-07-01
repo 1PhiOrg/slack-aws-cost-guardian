@@ -279,6 +279,7 @@ class LLMClient:
         tools: list[LLMTool],
         system_prompt: str,
         max_iterations: int = 5,
+        history: list[LLMMessage] | None = None,
     ) -> str | None:
         """
         Answer a user's cost question using tools.
@@ -293,6 +294,8 @@ class LLMClient:
             tools: List of tool definitions for the LLM.
             system_prompt: System prompt for the cost query assistant.
             max_iterations: Maximum tool-use iterations (default 5).
+            history: Prior conversation turns (user/assistant text) for multi-turn
+                threads. Inserted between the system prompt and the new question.
 
         Returns:
             Answer text if successful, None on failure.
@@ -307,6 +310,7 @@ class LLMClient:
 
             messages: list[LLMMessage] = [
                 LLMMessage(role="system", content=full_system_prompt),
+                *(history or []),
                 LLMMessage(role="user", content=question),
             ]
 
