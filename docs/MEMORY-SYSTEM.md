@@ -122,15 +122,29 @@ The conversation navigation loop is the one place an agent framework would actua
 
 ## Write path — how memories are created
 
-1. **Raw signal (already captured).** `FEEDBACK#` items from Slack buttons; the unused `CHANGE#` change log.
-2. **Thread harvest.** On thread close (inactivity timeout or explicit `🧠` / `/remember`), summarize the thread into a **candidate** deep-memory concept.
-3. **Consolidation (the curator).** Scheduled on the existing daily/weekly EventBridge cadence. Reads recent feedback + change log + thread candidates + the current hot item + `INDEX.md`, then: rewrites the lean `MEMORY#HOT` item, and writes/updates/prunes deep concept files in S3. Bumps `MEMORY#VERSION`.
+Two things that are easy to conflate: **sources** of signal vs the **consolidation** step (the curator). Conversations are a *source* that feeds the curator; they don't replace it. And the curator is *trigger-agnostic* — separate the trigger (what wakes it) from the gate (whether it's worth an LLM call).
+
+### Sources of signal
+1. **Button feedback (already captured).** `FEEDBACK#` items from Slack alert buttons (expected / unexpected / investigating + note). Implicit "this is fine" signal. Not a conversation.
+2. **Explicit "remember this."** A `🧠` reaction or `/remember` in a thread — free-form facts beyond what a button can express. High-precision, and it sidesteps thread-close detection. (P3 — needs the Slack thread event plumbing.)
+3. **Thread harvest.** On thread close (inactivity timeout — Slack has no native "conversation ended" event), summarize the thread into a **candidate**. Recall insurance for facts the user didn't explicitly flag. The fiddliest trigger; lowest priority. (P3.)
+
+### The consolidation step (the curator)
+Reads recent feedback + change log + thread candidates + current hot memory (+ `INDEX.md` in P2+), then rewrites the lean `MEMORY#HOT` item (and writes/prunes deep concept files + bumps `MEMORY#VERSION` in P2+). `MemoryCurator.run()` is the same regardless of what triggered it.
+
+### Triggers vs. gate
+- **Triggers (event-driven, primary):** the callback Lambda async-invokes the curator right after storing feedback; later, `/remember` and thread-close fire it too. This scales to zero — nothing fires when the account is idle (which for a low-activity environment may be weeks or months), and fires immediately when you do interact.
+- **Gate (cheap, in front of every trigger):** a **watermark** (`last_curated_at` on `MEMORY#HOT`). Before spending an LLM call, compare it to the newest signal timestamp; if nothing is newer, return a no-op. So any trigger — and the backstop — is safe to fire often.
+- **Backstop (scheduled, gated):** a **weekly** EventBridge pass (Monday), not daily. In a constant low-activity environment it almost always no-ops for free; it exists only so consolidation/pruning still happens if button feedback accrued but no other trigger fired. Off via `memory.curator.enabled: false`.
+- **Manual override:** `make run-curator` / `make test-curate` pass `force: true` to bypass the gate for testing.
+
+> Not triggers for consolidation: **LLM-proposes-"remember this?"** during a conversation is deferred to P3 (it needs the conversation loop already running, and per-message inspection is only cheap there).
 
 ```
-FEEDBACK# / CHANGE#  ─┐
-thread harvest       ─┼─► Consolidation (LLM) ─► MEMORY#HOT (DynamoDB, rewritten lean)
-current hot + index  ─┘                          └─► memory/*.md + INDEX.md (S3)
-                                                  └─► bump MEMORY#VERSION
+button feedback ──(async invoke)──┐
+/remember, thread close (P3) ─────┼─► [watermark gate] ─► MemoryCurator.run() ─► MEMORY#HOT (rewritten lean)
+weekly backstop (gated) ──────────┘         │ no-op if                        └─► memory/*.md + INDEX.md (P2+)
+                                            └ nothing newer than watermark
 ```
 
 ## OKF (confirmed) and optional OKR
@@ -161,28 +175,38 @@ Prove the read/inject path with a hand-written hot memory before any LLM curatio
 - Add `MEMORY#VERSION` pointer item (used later by the conversation path; harmless now).
 - **Done when:** a manually-edited hot fact visibly changes an anomaly assessment (e.g. seed "prod NAT baseline is accepted" and confirm a NAT bump stops surfacing).
 
-### Phase 1 — The curator (the actual learning loop)
+### Phase 1 — The curator (the actual learning loop) ✅ built
 Make hot memory write itself from real signal.
-- New consolidation Lambda on an EventBridge schedule (start daily; reuse the existing cadence wiring).
-- Inputs: recent `FEEDBACK#` items + `CHANGE#` log + current `MEMORY#HOT`. (No deep memory yet — curator only maintains the hot item in this phase.)
-- Uses curator prompt #2, but with `concept_writes`/`index_md` ignored for now — it only rewrites `hot_memory_text`.
-- Curator model: Haiku-class.
-- Write the new hot text back to `MEMORY#HOT`; log `notes` for an audit trail.
-- **Done when:** clicking "expected" on a recurring alert causes that pattern to stop being surfaced on the next check, with no human editing the hot item.
+- `MemoryCurator.run()` reads recent `FEEDBACK#` + `CHANGE#` + current `MEMORY#HOT`, rewrites the lean hot item. (No deep memory yet — hot only in this phase.)
+- Curator prompt is P1-minimal (`hot_memory_text` + `notes`); `concept_writes`/`index_md` arrive in P2.
+- **Trigger is event-driven, not a daily clock:** the callback Lambda async-invokes the curator right after storing feedback (`{"curate": true}`). A **watermark gate** (`last_curated_at`) skips the LLM call when nothing is newer. A **weekly** EventBridge pass is a gated backstop only. See "Write path" above.
+- Curator model: currently reuses the configured `llm` provider/model; Haiku-class recommended (a per-task model override is a future enhancement since the client is shared with anomaly analysis).
+- **Done when:** clicking "expected" on a recurring alert causes that pattern to stop being surfaced on the next check, with no human editing the hot item. ✅
 
-### Phase 2 — Deep memory store (write side, still no conversation)
+### Phase 2 — Deep memory store (write side, still no conversation) ✅ built
 Start accumulating the OKF corpus so there's something to navigate later.
-- Stand up the `memory/` prefix in S3 with `INDEX.md`.
-- Extend the curator to also emit `concept_writes` + `index_md` (full prompt #2) — feedback that's durable-but-not-hot becomes deep concepts instead of bloating hot.
-- Bump `MEMORY#VERSION` on every deep write.
-- **Done when:** the curator is filing tagged, linked concept files in S3 and keeping `INDEX.md` accurate — even though nothing reads them yet.
+- `DeepMemoryStore` (`storage/deep_memory.py`) reads/writes `memory/*.md` concept files + `INDEX.md` in the config bucket (untrusted LLM paths are traversal-guarded).
+- The curator prompt is now the full version (`hot_memory_text` + `concept_writes` + `index_md`); `MemoryCurator` loads the current index + concepts, applies concept writes, updates `INDEX.md`, and bumps `MEMORY#VERSION` on any deep write. Deep writes are best-effort — a deep-write failure never blocks hot consolidation.
+- Collector Lambda granted S3 read/write on the bucket; `make list-memory` inspects the corpus.
+- **Done when:** the curator files tagged, linked concept files in S3 and keeps `INDEX.md` accurate — even though nothing reads them yet. ✅ (nothing reads deep memory for analysis until P3)
 
-### Phase 3 — Conversation path (the big lift + framework experiment)
-Make deep memory readable, and harvest new memories from threads.
-- Slack bot thread = a session. On engagement: `s3 sync memory/ → /tmp` (skip if `MEMORY#VERSION` unchanged), load `INDEX.md`, navigate via `grep_memory` / `read_concept` / `follow_link`.
-- On thread close: run thread-harvest prompt #3 → candidate concept → fed to the curator.
-- **Framework bake-off happens here:** Pydantic AI vs smolagents vs hand-rolled Anthropic tool-use, scoped to this Lambda only. Adopt one only if it's genuinely simpler. This is the build-in-public case study for the adopt/abandon post.
-- **Done when:** a user can ask the bot "why did EC2 jump last Tuesday?" and it navigates deep memory to answer, and a decision made in that thread shows up as a new concept after the next curator run.
+Phase 3 splits into a read side (unblocked) and a write-from-conversation side (needs #3).
+
+### Phase 3a — Deep memory readable by the bot ✅ built
+Make deep memory *used* (it's write-only through P2). The existing @mention/DM bot is already a tool-use agent, so this is additive:
+- `llm/tools/memory_tools.py` — `list_memory` / `search_memory` / `read_memory_concept`, backed by `DeepMemoryStore`, registered onto the bot's tool registry alongside the cost tools.
+- Hot memory is prepended to the bot's context, so it also knows accepted baselines/preferences.
+- System prompt tells the bot to consult learned memory and cite it.
+- No CDK change — the events Lambda already has S3 + DynamoDB read.
+- **Done when:** you can ask the bot a question and it consults learned memory to answer (and cites "you previously marked this expected"). ✅ (surfaces learned facts as the corpus fills)
+
+This closes the whole loop end to end: **feedback → curator writes deep memory → bot reads it to answer.**
+
+### Phase 3b — Write-from-conversation + framework experiment (needs #3)
+The harvest side genuinely depends on threaded multi-turn conversations (#3); the current bot is single-shot.
+- Slack thread = a session; on thread close (inactivity) or explicit `🧠`/`/remember`, run thread-harvest prompt #3 → candidate concept → fed to the curator.
+- **Framework bake-off** (Pydantic AI vs smolagents vs hand-rolled): reserved for the richer #3 agent. Note: the existing tool-use loop already works, so per the "adopt only if simpler" rule, we do **not** rewrite it just to trial a framework — the experiment rides on the new #3 build.
+- **Done when:** a decision made in a thread shows up as a new concept after the next curator run.
 
 ### Phase 4 — Context expansion via MCP (reach beyond our own memory)
 Let the conversation agent pull in *live external context* when a question needs more than the system already knows. **The MCP server is a pluggable slot, not a specific integration** — GitHub is just the first one worth wiring. Any hosted MCP server fits the same pattern:

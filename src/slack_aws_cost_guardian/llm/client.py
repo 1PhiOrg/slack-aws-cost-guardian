@@ -108,6 +108,7 @@ class LLMClient:
         historical_context: str,
         user_context: str,
         system_prompt: str,
+        hot_memory: str = "",
     ) -> str | None:
         """
         Analyze an anomaly using the configured LLM.
@@ -120,6 +121,8 @@ class LLMClient:
             historical_context: Summary of recent cost history.
             user_context: User-specific context from guardian-context.md.
             system_prompt: System prompt defining AI behavior.
+            hot_memory: Curated learned-memory text injected as an override/
+                addendum to user_context. Optional.
 
         Returns:
             Analysis text if successful, None on any failure.
@@ -133,6 +136,7 @@ class LLMClient:
                 anomaly_data=anomaly_data,
                 historical_context=historical_context,
                 user_context=user_context,
+                hot_memory=hot_memory,
             )
 
             messages = [
@@ -275,6 +279,7 @@ class LLMClient:
         tools: list[LLMTool],
         system_prompt: str,
         max_iterations: int = 5,
+        history: list[LLMMessage] | None = None,
     ) -> str | None:
         """
         Answer a user's cost question using tools.
@@ -289,6 +294,8 @@ class LLMClient:
             tools: List of tool definitions for the LLM.
             system_prompt: System prompt for the cost query assistant.
             max_iterations: Maximum tool-use iterations (default 5).
+            history: Prior conversation turns (user/assistant text) for multi-turn
+                threads. Inserted between the system prompt and the new question.
 
         Returns:
             Answer text if successful, None on failure.
@@ -303,6 +310,7 @@ class LLMClient:
 
             messages: list[LLMMessage] = [
                 LLMMessage(role="system", content=full_system_prompt),
+                *(history or []),
                 LLMMessage(role="user", content=question),
             ]
 
