@@ -280,6 +280,19 @@ The report shows costs from 2 days ago (configurable via `cost_data_lag_days`) b
 | `make backfill BACKFILL_DAYS=N` | Load N days of historical data |
 | `make scan-snapshots` | List recent cost snapshots |
 
+### Learning Memory
+
+| Command | Description |
+|---------|-------------|
+| `make show-memory` | Show current hot memory |
+| `make list-memory` | List deep-memory concepts + index |
+| `make set-memory TEXT="..."` | Seed a hot-memory fact |
+| `make clear-memory` | Clear hot memory |
+| `make test-curate` | Dry-run the curator (no writes) |
+| `make run-curator` | Run the curator now |
+
+See [MEMORY-SYSTEM.md](MEMORY-SYSTEM.md) for how learning memory works.
+
 ## Next Steps
 
 - **Customize AI context**: Edit `config/guardian-context.md` with your infrastructure details
