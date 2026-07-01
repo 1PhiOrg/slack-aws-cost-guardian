@@ -88,6 +88,13 @@ collection:
       # 2 = query data from 2 days ago (recommended)
       cost_data_lag_days: 2
 
+      # Exclude credits/refunds so reported cost reflects gross (pre-credit) usage.
+      # AWS promotional credits post as negative line items that every Cost
+      # Explorer metric nets out — so an account running on credits reports
+      # near-zero spend while real usage burns. Keep true to track credit
+      # burn-down; set false to report net (post-credit) cost.
+      exclude_credits: true
+
     budgets:
       # Also fetch AWS Budgets data (if you have budgets configured)
       enabled: true

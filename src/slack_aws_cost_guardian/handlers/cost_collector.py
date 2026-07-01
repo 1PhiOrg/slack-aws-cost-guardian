@@ -120,6 +120,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     cost_explorer = CostExplorerCollector(
         region=config.aws.region,
         cost_data_lag_days=config.collection.sources.cost_explorer.cost_data_lag_days,
+        exclude_credits=config.collection.sources.cost_explorer.exclude_credits,
     )
     budgets_collector = BudgetsCollector(region=config.aws.region)
     anomaly_detector = AnomalyDetector(config.anomaly_detection)
@@ -827,6 +828,15 @@ def _handle_backfill(
 
     print(f"Querying Cost Explorer for {start_date} to {end_date}...")
 
+    # Exclude credits/refunds so backfilled history is gross (pre-credit) and
+    # consistent with live collection — otherwise the switchover creates a step
+    # change anomaly detection reads as a spike.
+    cost_filter = (
+        {"Not": {"Dimensions": {"Key": "RECORD_TYPE", "Values": ["Credit", "Refund"]}}}
+        if config.collection.sources.cost_explorer.exclude_credits
+        else None
+    )
+
     # Query Cost Explorer for daily costs by service
     try:
         response = cost_explorer.get_cost_and_usage(
@@ -839,6 +849,7 @@ def _handle_backfill(
             GroupBy=[
                 {"Type": "DIMENSION", "Key": "SERVICE"},
             ],
+            **({"Filter": cost_filter} if cost_filter else {}),
         )
     except Exception as e:
         print(f"Error querying Cost Explorer: {e}")

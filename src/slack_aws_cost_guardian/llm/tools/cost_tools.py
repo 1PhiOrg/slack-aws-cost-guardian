@@ -44,6 +44,7 @@ def _parse_date(date_str: str) -> date:
 def create_cost_tools(
     table_name: str | None = None,
     region: str = "us-east-1",
+    exclude_credits: bool = True,
 ) -> ToolRegistry:
     """
     Create a ToolRegistry with cost query tools.
@@ -51,12 +52,14 @@ def create_cost_tools(
     Args:
         table_name: DynamoDB table name for cached data. If None, uses Cost Explorer only.
         region: AWS region for Cost Explorer.
+        exclude_credits: Exclude Credit/Refund record types so live Cost Explorer
+            queries report gross (pre-credit) usage, consistent with collection.
 
     Returns:
         ToolRegistry with registered cost tools.
     """
     registry = ToolRegistry()
-    collector = CostExplorerCollector(region=region)
+    collector = CostExplorerCollector(region=region, exclude_credits=exclude_credits)
     storage = DynamoDBStorage(table_name) if table_name else None
 
     def get_daily_costs(
