@@ -417,6 +417,17 @@ clear-memory: ## Clear the hot learning memory
 	cat /tmp/collector-response.json | python3 -m json.tool && \
 	echo ""
 
+list-memory: ## List deep-memory concepts and show INDEX.md
+	@echo "$(BLUE)Fetching deep memory...$(RESET)"
+	@FUNCTION_NAME="cost-guardian-collector-$(ENV)" && \
+	aws lambda invoke \
+		--function-name "$$FUNCTION_NAME" \
+		--payload '{"memory_action": "list"}' \
+		--cli-binary-format raw-in-base64-out \
+		--output text /tmp/collector-response.json >/dev/null && \
+	cat /tmp/collector-response.json | python3 -m json.tool && \
+	echo ""
+
 test-curate: ## Run the memory curator in dry-run (computes, does not write)
 	@echo "$(BLUE)Running curator (dry-run)...$(RESET)"
 	@FUNCTION_NAME="cost-guardian-collector-$(ENV)" && \

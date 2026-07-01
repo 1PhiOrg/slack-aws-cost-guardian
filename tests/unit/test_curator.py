@@ -139,6 +139,34 @@ class _FakeStorage:
     def set_last_curated_at(self, timestamp):
         self.last_curated_at = timestamp
 
+    def bump_memory_version(self):
+        self.version = getattr(self, "version", 0) + 1
+        return self.version
+
+
+class _FakeDeepStore:
+    def __init__(self, index="", concepts=None):
+        self.index = index
+        self.concepts = concepts or {}
+        self.writes = {}
+        self.index_writes = []
+
+    def read_index(self):
+        return self.index
+
+    def read_all_concepts(self):
+        return dict(self.concepts)
+
+    def write_concept(self, path, content):
+        if not path or ".." in path.split("/") or path.startswith("/"):
+            return False
+        self.writes[path] = content
+        return True
+
+    def write_index(self, content):
+        self.index = content
+        self.index_writes.append(content)
+
 
 class _FakeLLM:
     def __init__(self, content=None, raises=False):
@@ -275,3 +303,67 @@ def test_watermark_not_advanced_on_llm_error():
     llm = _FakeLLM(raises=True)
     MemoryCurator(storage, llm).run()
     assert storage.last_curated_at is None
+
+
+# ---------------------------------------------------------------------------
+# Deep memory (P2)
+# ---------------------------------------------------------------------------
+
+_DEEP_RESPONSE = """{
+  "hot_memory_text": "NAT baseline accepted",
+  "concept_writes": [
+    {"path": "services/nat-gateway-baseline.md", "action": "create",
+     "frontmatter": {"id": "nat-gateway-baseline", "type": "service"},
+     "body": "NAT baseline is accepted.\\n\\n**Why:** user feedback."}
+  ],
+  "index_md": "# Deep memory index\\n- services/nat-gateway-baseline.md",
+  "notes": "filed NAT baseline"
+}"""
+
+
+def test_deep_writes_concept_and_index_and_bumps_version():
+    storage = _FakeStorage(feedback=[_feedback()], hot="old")
+    deep = _FakeDeepStore()
+    llm = _FakeLLM(content=_DEEP_RESPONSE)
+    result = MemoryCurator(storage, llm, deep_store=deep).run()
+
+    assert "services/nat-gateway-baseline.md" in deep.writes
+    assert "id: nat-gateway-baseline" in deep.writes["services/nat-gateway-baseline.md"]
+    assert "services/nat-gateway-baseline.md" in deep.index
+    assert result["concepts_written"] == 1
+    assert result["index_updated"] is True
+    assert result["memory_version"] == 1  # bumped once
+
+
+def test_deep_dry_run_writes_nothing():
+    storage = _FakeStorage(feedback=[_feedback()], hot="old")
+    deep = _FakeDeepStore()
+    llm = _FakeLLM(content=_DEEP_RESPONSE)
+    result = MemoryCurator(storage, llm, deep_store=deep).run(dry_run=True)
+
+    assert deep.writes == {}
+    assert deep.index_writes == []
+    assert result["concept_writes_proposed"] == 1
+
+
+def test_no_deep_store_ignores_concept_writes():
+    storage = _FakeStorage(feedback=[_feedback()], hot="old")
+    llm = _FakeLLM(content=_DEEP_RESPONSE)
+    result = MemoryCurator(storage, llm).run()  # no deep_store
+    # Hot still updated, deep proposals counted but not applied.
+    assert result["changed"] is True
+    assert result["concept_writes_proposed"] == 1
+    assert "concepts_written" not in result
+
+
+def test_deep_unsafe_path_skipped():
+    storage = _FakeStorage(feedback=[_feedback()], hot="old")
+    deep = _FakeDeepStore()
+    bad = _DEEP_RESPONSE.replace(
+        "services/nat-gateway-baseline.md", "../escape.md"
+    )
+    llm = _FakeLLM(content=bad)
+    result = MemoryCurator(storage, llm, deep_store=deep).run()
+    assert deep.writes == {}
+    assert result["concepts_written"] == 0
+    assert result["concepts_skipped"] == 1

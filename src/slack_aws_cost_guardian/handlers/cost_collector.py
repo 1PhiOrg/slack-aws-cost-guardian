@@ -27,6 +27,7 @@ from slack_aws_cost_guardian.config import load_config, load_guardian_context
 from slack_aws_cost_guardian.llm import LLMClient, SYSTEM_PROMPT
 from slack_aws_cost_guardian.notifications.slack.formatter import SlackFormatter
 from slack_aws_cost_guardian.notifications.slack.webhook import SlackWebhookManager
+from slack_aws_cost_guardian.storage.deep_memory import DeepMemoryStore
 from slack_aws_cost_guardian.storage.dynamodb import DynamoDBStorage
 from slack_aws_cost_guardian.storage.models import (
     AnomalyInfo,
@@ -488,10 +489,26 @@ def _handle_memory_action(action: str, event: dict[str, Any]) -> dict[str, Any]:
     - "show":  return current hot memory text and version pointer
     - "set":   replace hot memory with event["memory_text"]
     - "clear": empty the hot memory
+    - "list":  list deep-memory concepts and INDEX.md
     """
     config = load_config()
     table_name = os.environ.get("TABLE_NAME", f"cost-guardian-{config.environment}")
     storage = DynamoDBStorage(table_name)
+
+    if action == "list":
+        config_bucket = os.environ.get("CONFIG_BUCKET", "")
+        if not config_bucket:
+            return {"statusCode": 200, "memory_action": "list", "error": "no CONFIG_BUCKET"}
+        deep_store = DeepMemoryStore(config_bucket)
+        concepts = deep_store.read_all_concepts()
+        return {
+            "statusCode": 200,
+            "memory_action": "list",
+            "memory_version": storage.get_memory_version(),
+            "concept_count": len(concepts),
+            "concepts": list(concepts.keys()),
+            "index": deep_store.read_index(),
+        }
 
     if action == "show":
         text = storage.get_hot_memory()
@@ -522,11 +539,15 @@ def _handle_curate(event: dict[str, Any], test_mode: bool) -> dict[str, Any]:
     print("Running memory curator...")
     config = load_config()
     table_name = os.environ.get("TABLE_NAME", f"cost-guardian-{config.environment}")
+    config_bucket = os.environ.get("CONFIG_BUCKET", "")
     config_secret_name = os.environ.get(
         "CONFIG_SECRET_NAME", f"cost-guardian/{config.environment}/config"
     )
 
     storage = DynamoDBStorage(table_name)
+
+    # Deep memory (P2): S3-backed concept files. Skipped if no bucket configured.
+    deep_store = DeepMemoryStore(config_bucket) if config_bucket else None
 
     try:
         llm_client = LLMClient(
@@ -546,6 +567,7 @@ def _handle_curate(event: dict[str, Any], test_mode: bool) -> dict[str, Any]:
         storage=storage,
         llm_client=llm_client,
         feedback_days=feedback_days,
+        deep_store=deep_store,
     )
     result = curator.run(dry_run=dry_run, force=force)
     print(f"Curator result: {json.dumps(result)}")

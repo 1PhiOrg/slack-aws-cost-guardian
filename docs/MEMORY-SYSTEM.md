@@ -183,12 +183,12 @@ Make hot memory write itself from real signal.
 - Curator model: currently reuses the configured `llm` provider/model; Haiku-class recommended (a per-task model override is a future enhancement since the client is shared with anomaly analysis).
 - **Done when:** clicking "expected" on a recurring alert causes that pattern to stop being surfaced on the next check, with no human editing the hot item. ✅
 
-### Phase 2 — Deep memory store (write side, still no conversation)
+### Phase 2 — Deep memory store (write side, still no conversation) ✅ built
 Start accumulating the OKF corpus so there's something to navigate later.
-- Stand up the `memory/` prefix in S3 with `INDEX.md`.
-- Extend the curator to also emit `concept_writes` + `index_md` (full prompt #2) — feedback that's durable-but-not-hot becomes deep concepts instead of bloating hot.
-- Bump `MEMORY#VERSION` on every deep write.
-- **Done when:** the curator is filing tagged, linked concept files in S3 and keeping `INDEX.md` accurate — even though nothing reads them yet.
+- `DeepMemoryStore` (`storage/deep_memory.py`) reads/writes `memory/*.md` concept files + `INDEX.md` in the config bucket (untrusted LLM paths are traversal-guarded).
+- The curator prompt is now the full version (`hot_memory_text` + `concept_writes` + `index_md`); `MemoryCurator` loads the current index + concepts, applies concept writes, updates `INDEX.md`, and bumps `MEMORY#VERSION` on any deep write. Deep writes are best-effort — a deep-write failure never blocks hot consolidation.
+- Collector Lambda granted S3 read/write on the bucket; `make list-memory` inspects the corpus.
+- **Done when:** the curator files tagged, linked concept files in S3 and keeps `INDEX.md` accurate — even though nothing reads them yet. ✅ (nothing reads deep memory for analysis until P3)
 
 ### Phase 3 — Conversation path (the big lift + framework experiment)
 Make deep memory readable, and harvest new memories from threads.

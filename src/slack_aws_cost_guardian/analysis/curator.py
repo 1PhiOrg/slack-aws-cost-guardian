@@ -19,9 +19,11 @@ from slack_aws_cost_guardian.llm.prompts import (
     CURATOR_SYSTEM_PROMPT,
     build_curator_prompt,
 )
+from slack_aws_cost_guardian.storage.deep_memory import render_concept
 
 if TYPE_CHECKING:
     from slack_aws_cost_guardian.llm.client import LLMClient
+    from slack_aws_cost_guardian.storage.deep_memory import DeepMemoryStore
     from slack_aws_cost_guardian.storage.dynamodb import DynamoDBStorage
     from slack_aws_cost_guardian.storage.models import AnomalyFeedback, ChangeLog
 
@@ -105,6 +107,7 @@ class MemoryCurator:
         storage: DynamoDBStorage,
         llm_client: LLMClient,
         feedback_days: int = 30,
+        deep_store: DeepMemoryStore | None = None,
     ):
         """
         Args:
@@ -112,10 +115,29 @@ class MemoryCurator:
             llm_client: Configured LLM client (a Haiku-class model is recommended
                 for cost - the task is organize, not deep reasoning).
             feedback_days: How many days of feedback to consider.
+            deep_store: Optional S3 deep-memory store. When provided, the curator
+                also files durable-but-not-hot facts as concept files (P2). When
+                None, it maintains hot memory only.
         """
         self.storage = storage
         self.llm_client = llm_client
         self.feedback_days = feedback_days
+        self.deep_store = deep_store
+
+    def _apply_concept_writes(self, concept_writes: list[dict]) -> dict[str, list]:
+        """Write each concept file to the deep store. Best-effort per file."""
+        written, skipped = [], []
+        for w in concept_writes or []:
+            path = w.get("path")
+            if not path:
+                skipped.append({"path": path, "reason": "no_path"})
+                continue
+            content = render_concept(w.get("frontmatter") or {}, w.get("body") or "")
+            if self.deep_store.write_concept(path, content):
+                written.append(path)
+            else:
+                skipped.append({"path": path, "reason": "unsafe_path"})
+        return {"written": written, "skipped": skipped}
 
     def run(self, dry_run: bool = False, force: bool = False) -> dict[str, Any]:
         """
@@ -159,10 +181,24 @@ class MemoryCurator:
             result["reason"] = "no_new_signal"
             return result
 
+        # Load deep-memory context so the curator can update rather than duplicate.
+        deep_index, deep_concepts = "", ""
+        if self.deep_store is not None:
+            try:
+                deep_index = self.deep_store.read_index()
+                concepts = self.deep_store.read_all_concepts()
+                deep_concepts = "\n\n".join(
+                    f"### {path}\n{body}" for path, body in concepts.items()
+                )
+            except Exception as e:  # deep read failure shouldn't block hot curation
+                result["deep_read_error"] = str(e)
+
         user_prompt = build_curator_prompt(
             feedback_summary=summarize_feedback(feedback),
             changes_summary=summarize_changes(changes),
             current_hot_memory=current_hot,
+            deep_index=deep_index,
+            deep_concepts=deep_concepts,
         )
         messages = [
             LLMMessage(role="system", content=CURATOR_SYSTEM_PROMPT),
@@ -198,6 +234,28 @@ class MemoryCurator:
                 self.storage.put_hot_memory(new_hot)
             result["changed"] = True
             result["new_hot_memory"] = new_hot
+
+        # Deep memory (P2): file durable-but-not-hot facts as concept files and
+        # keep INDEX.md in sync. Best-effort - never blocks hot consolidation.
+        concept_writes = parsed.get("concept_writes") or []
+        index_md = parsed.get("index_md")
+        result["concept_writes_proposed"] = len(concept_writes)
+        if self.deep_store is not None and not dry_run:
+            try:
+                applied = self._apply_concept_writes(concept_writes)
+                wrote_any = bool(applied["written"])
+                if index_md is not None:
+                    self.deep_store.write_index(str(index_md))
+                    wrote_any = True
+                if wrote_any:
+                    result["memory_version"] = self.storage.bump_memory_version()
+                result["concepts_written"] = len(applied["written"])
+                result["concepts_skipped"] = len(applied["skipped"])
+                if applied["skipped"]:
+                    result["skipped_detail"] = applied["skipped"]
+                result["index_updated"] = index_md is not None
+            except Exception as e:  # deep-write failure is non-fatal
+                result["deep_write_error"] = str(e)
 
         # Signal was consolidated - advance the watermark so the next trigger
         # is a cheap no-op until fresh feedback arrives.

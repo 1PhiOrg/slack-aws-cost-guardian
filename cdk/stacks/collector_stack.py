@@ -185,8 +185,8 @@ class CollectorStack(Stack):
         # DynamoDB permissions
         table.grant_read_write_data(self.collector_function)
 
-        # S3 permissions (read config)
-        config_bucket.grant_read(self.collector_function)
+        # S3 permissions: read config + read/write deep memory under memory/
+        config_bucket.grant_read_write(self.collector_function)
 
         # Secrets Manager permissions
         self.config_secret.grant_read(self.collector_function)
