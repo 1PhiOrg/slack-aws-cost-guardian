@@ -157,7 +157,7 @@ llm:
   provider: "anthropic"
 
   anthropic:
-    model_id: "claude-sonnet-4-20250514"
+    model_id: "claude-sonnet-4-6"
     # API key from: Secrets Manager -> cost-guardian/{env}/config -> anthropic_api_key
 
   openai:
