@@ -42,51 +42,31 @@ make validate
 
 ## How It Works
 
-```
-┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│   EventBridge   │────▶│     Lambda      │────▶│  Cost Explorer  │
-│   (scheduled)   │     │   (collector)   │     │      API        │
-└─────────────────┘     └────────┬────────┘     └─────────────────┘
-                                 │
-                                 ▼
-                        ┌─────────────────┐
-                        │    DynamoDB     │
-                        │   (snapshots)   │
-                        └────────┬────────┘
-                                 │
-                    ┌────────────┴────────────┐
-                    ▼                         ▼
-           ┌─────────────────┐       ┌─────────────────┐
-           │ Anomaly Detect  │       │   LLM Analysis  │
-           └────────┬────────┘       └────────┬────────┘
-                    │                         │
-                    └────────────┬────────────┘
-                                 ▼
-                        ┌─────────────────┐
-                        │  Slack Alert    │◀───── User Feedback
-                        │  (with buttons) │
-                        └─────────────────┘
+```mermaid
+flowchart TD
+    EB["EventBridge (schedules)"] --> COL["Collector Lambda"]
+    COL --> CE["Cost Explorer & Budgets"]
+    COL --> DET["Anomaly detection + AI analysis"]
+    DET --> ALERT["Slack alert (feedback buttons)"]
 
-┌─────────────────┐     ┌─────────────────┐
-│  Slack @mention │────▶│  Events Lambda  │────▶ Bot Response
-│    or DM        │     │  (with tools)   │
-└─────────────────┘     └─────────────────┘
+    USER["Slack @mention / DM"] --> BOT["Events Lambda (bot: cost + memory tools)"]
+
+    ALERT -- "expected / unexpected" --> CB["Callback Lambda"]
+    CB -- "trigger" --> CUR["Curator (LLM)"]
+    BOT -- "remember_fact" --> CUR
+    CUR --> HOT[("Hot memory")]
+    CUR --> DEEP[("Deep memory (S3)")]
+
+    HOT -. "injected into every check" .-> DET
+    DEEP -. "consulted when answering" .-> BOT
+
+    classDef mem fill:#eef2ff,stroke:#6677aa,color:#223344;
+    class HOT,DEEP,CUR mem;
 ```
 
-### Learning loop
-
-Feedback and conversation feed a **curator** that maintains two layers of memory,
-which are then applied back to every assessment:
-
-```
-alert feedback ──┐
-"remember this" ─┼─▶ Curator (LLM) ─▶ Hot memory (DynamoDB, every check)
-                 │                   └▶ Deep memory (OKF concepts in S3)
-                 └─ triggers event-driven (watermark-gated; weekly backstop)
-
-Hot memory ─────▶ injected into every anomaly analysis
-Deep memory ────▶ read by the bot when answering questions
-```
+The dotted arrows are the **learning loop**: alert feedback and "remember this"
+conversations feed a curator that writes two layers of memory, which are then
+applied back to every future check (hot memory) and every bot answer (deep memory).
 
 You click "expected" on an alert, or tell the bot to remember something in plain
 English, and the guardian folds it into memory and stops flagging it. Full design:
