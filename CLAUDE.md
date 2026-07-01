@@ -3,6 +3,17 @@
 ## Project Overview
 AI-powered AWS cost monitoring with Slack integration. Detects spending anomalies, provides intelligent analysis, and delivers actionable insights to Slack.
 
+## Development Standards
+
+This project follows [1Phi Development Standards](https://github.com/1PhiOrg/standards).
+For the full set of standards, read the relevant doc in `../standards/`.
+
+For infrastructure, backend, and testing patterns, consult
+`../standards/architecture/` and `../standards/development/`.
+
+Shared workflow skills are linked into `.claude/skills/` from the standards repo
+(`comment`, `commit`, `pr`, `pr-prep`, `pr-review`, `start`).
+
 ## Tech Stack
 - **Language**: Python 3.12
 - **Infrastructure**: AWS CDK v2
@@ -21,8 +32,15 @@ AI-powered AWS cost monitoring with Slack integration. Detects spending anomalie
 
 | User Request | Action |
 |--------------|--------|
+| Issue number, "work on #42" | Run `/start` skill |
+| "create a plan" | Read and follow [planning-workflow.md](~/1phi/standards/development/planning-workflow.md) — plan first, implement only after explicit approval |
 | "commit", "make a commit" | Run `/commit` skill |
-| "PR", "pull request" | Run `/pr` skill |
+| "ready for PR", "prep for PR" | Run `/pr-prep` skill |
+| "PR", "pull request", "PR notes" | Run `/pr` skill |
+| "review PR", "approve PR" | Run `/pr-review` skill |
+| "create an issue" | Read and follow [github-issues-workflow.md](~/1phi/standards/development/github-issues-workflow.md) |
+| Technical decision made | Read and follow [adr-workflow.md](~/1phi/standards/development/adr-workflow.md) |
+| "deploy", deployment questions | Read Makefile targets — DO NOT run deploy commands yourself |
 
 ## Version Management
 

@@ -202,8 +202,14 @@ logs/
 TODO.md
 
 # Claude Code
-.claude/
+.claude/*
 !.claude/skills/
+
+# Local project instructions (points to personal brain repo)
+CLAUDE.local.md
+
+# Commit workflow scratch file (/commit skill artifact)
+COMMIT_MESSAGE.md
 
 # SSH Keys (only commit public keys, never private keys)
 .devcontainer/ssh/id_*
