@@ -19,7 +19,14 @@ import boto3
 from slack_aws_cost_guardian.config.loader import load_config, load_guardian_context
 from slack_aws_cost_guardian.llm.client import LLMClient
 from slack_aws_cost_guardian.llm.tools.cost_tools import create_cost_tools
-from slack_aws_cost_guardian.llm.tools.schemas import COST_QUERY_SYSTEM_PROMPT, COST_TOOLS
+from slack_aws_cost_guardian.llm.tools.memory_tools import register_memory_tools
+from slack_aws_cost_guardian.llm.tools.schemas import (
+    COST_QUERY_SYSTEM_PROMPT,
+    COST_TOOLS,
+    MEMORY_TOOLS,
+)
+from slack_aws_cost_guardian.storage.deep_memory import DeepMemoryStore
+from slack_aws_cost_guardian.storage.dynamodb import DynamoDBStorage
 from slack_aws_cost_guardian.notifications.slack.bot import SlackBotClient
 from slack_aws_cost_guardian.notifications.slack.callback import verify_slack_signature
 
@@ -238,6 +245,19 @@ def _answer_question(
         if config_bucket:
             guardian_context = load_guardian_context(config_bucket, "config/guardian-context.md")
 
+        # Prepend hot learning memory so the bot knows accepted baselines/preferences.
+        if table_name:
+            try:
+                hot_memory = DynamoDBStorage(table_name).get_hot_memory()
+                if hot_memory:
+                    prefix = (guardian_context or "").rstrip()
+                    guardian_context = (
+                        f"{prefix}\n\n## Learned memory (accepted baselines / preferences)\n"
+                        f"{hot_memory}"
+                    ).strip()
+            except Exception as e:
+                print(f"Could not load hot memory: {e}")
+
         # Initialize LLM client
         config = load_config("config/config.yaml")
         llm_client = LLMClient(
@@ -246,18 +266,22 @@ def _answer_question(
             region=region,
         )
 
-        # Create tool registry
+        # Create tool registry (cost tools + learned-memory navigation tools)
         tool_registry = create_cost_tools(
             table_name=table_name if table_name else None,
             region=region,
         )
+        tools = list(COST_TOOLS)
+        if config_bucket:
+            register_memory_tools(tool_registry, DeepMemoryStore(config_bucket))
+            tools = tools + MEMORY_TOOLS
 
         # Get answer from LLM
         answer = llm_client.answer_cost_question(
             question=question,
             user_context=guardian_context,
             tool_registry=tool_registry,
-            tools=COST_TOOLS,
+            tools=tools,
             system_prompt=COST_QUERY_SYSTEM_PROMPT,
         )
 

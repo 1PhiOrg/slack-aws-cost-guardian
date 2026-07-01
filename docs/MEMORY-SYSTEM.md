@@ -190,12 +190,23 @@ Start accumulating the OKF corpus so there's something to navigate later.
 - Collector Lambda granted S3 read/write on the bucket; `make list-memory` inspects the corpus.
 - **Done when:** the curator files tagged, linked concept files in S3 and keeps `INDEX.md` accurate — even though nothing reads them yet. ✅ (nothing reads deep memory for analysis until P3)
 
-### Phase 3 — Conversation path (the big lift + framework experiment)
-Make deep memory readable, and harvest new memories from threads.
-- Slack bot thread = a session. On engagement: `s3 sync memory/ → /tmp` (skip if `MEMORY#VERSION` unchanged), load `INDEX.md`, navigate via `grep_memory` / `read_concept` / `follow_link`.
-- On thread close: run thread-harvest prompt #3 → candidate concept → fed to the curator.
-- **Framework bake-off happens here:** Pydantic AI vs smolagents vs hand-rolled Anthropic tool-use, scoped to this Lambda only. Adopt one only if it's genuinely simpler. This is the build-in-public case study for the adopt/abandon post.
-- **Done when:** a user can ask the bot "why did EC2 jump last Tuesday?" and it navigates deep memory to answer, and a decision made in that thread shows up as a new concept after the next curator run.
+Phase 3 splits into a read side (unblocked) and a write-from-conversation side (needs #3).
+
+### Phase 3a — Deep memory readable by the bot ✅ built
+Make deep memory *used* (it's write-only through P2). The existing @mention/DM bot is already a tool-use agent, so this is additive:
+- `llm/tools/memory_tools.py` — `list_memory` / `search_memory` / `read_memory_concept`, backed by `DeepMemoryStore`, registered onto the bot's tool registry alongside the cost tools.
+- Hot memory is prepended to the bot's context, so it also knows accepted baselines/preferences.
+- System prompt tells the bot to consult learned memory and cite it.
+- No CDK change — the events Lambda already has S3 + DynamoDB read.
+- **Done when:** you can ask the bot a question and it consults learned memory to answer (and cites "you previously marked this expected"). ✅ (surfaces learned facts as the corpus fills)
+
+This closes the whole loop end to end: **feedback → curator writes deep memory → bot reads it to answer.**
+
+### Phase 3b — Write-from-conversation + framework experiment (needs #3)
+The harvest side genuinely depends on threaded multi-turn conversations (#3); the current bot is single-shot.
+- Slack thread = a session; on thread close (inactivity) or explicit `🧠`/`/remember`, run thread-harvest prompt #3 → candidate concept → fed to the curator.
+- **Framework bake-off** (Pydantic AI vs smolagents vs hand-rolled): reserved for the richer #3 agent. Note: the existing tool-use loop already works, so per the "adopt only if simpler" rule, we do **not** rewrite it just to trial a framework — the experiment rides on the new #3 build.
+- **Done when:** a decision made in a thread shows up as a new concept after the next curator run.
 
 ### Phase 4 — Context expansion via MCP (reach beyond our own memory)
 Let the conversation agent pull in *live external context* when a question needs more than the system already knows. **The MCP server is a pluggable slot, not a specific integration** — GitHub is just the first one worth wiring. Any hosted MCP server fits the same pattern:
