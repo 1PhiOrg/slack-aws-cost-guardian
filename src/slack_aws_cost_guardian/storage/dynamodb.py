@@ -299,6 +299,97 @@ class DynamoDBStorage:
         )
 
     # =========================================================================
+    # Learning Memory (hot)
+    # =========================================================================
+    #
+    # Hot memory is a single, lean blob read on every anomaly check and injected
+    # into the analysis prompt as an override/addendum to guardian-context.md.
+    # It is kept short by the curator (see docs/MEMORY-SYSTEM.md), not by
+    # rotation. MEMORY#VERSION is a monotonically increasing pointer the
+    # conversation path uses to decide whether to re-sync deep memory; it is
+    # bumped by the curator when deep memory changes (harmless until then).
+
+    _HOT_MEMORY_KEY = {"PK": "MEMORY#HOT", "SK": "CURRENT"}
+    _MEMORY_VERSION_KEY = {"PK": "MEMORY#VERSION", "SK": "CURRENT"}
+
+    def get_hot_memory(self) -> str:
+        """
+        Get the current hot memory text.
+
+        Returns:
+            The hot memory text, or an empty string if none is set.
+        """
+        response = self.table.get_item(Key=self._HOT_MEMORY_KEY)
+        item = response.get("Item")
+        return item.get("text", "") if item else ""
+
+    def put_hot_memory(self, text: str) -> None:
+        """
+        Replace the hot memory text.
+
+        Args:
+            text: The full new hot memory contents.
+        """
+        self.table.put_item(
+            Item={
+                **self._HOT_MEMORY_KEY,
+                "text": text,
+                "updated_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S") + "Z",
+            }
+        )
+
+    def get_memory_version(self) -> int:
+        """
+        Get the current deep-memory version pointer.
+
+        Returns:
+            The version number, or 0 if none is set.
+        """
+        response = self.table.get_item(Key=self._MEMORY_VERSION_KEY)
+        item = response.get("Item")
+        return int(item["version"]) if item and "version" in item else 0
+
+    def bump_memory_version(self) -> int:
+        """
+        Atomically increment the deep-memory version pointer.
+
+        Returns:
+            The new version number.
+        """
+        response = self.table.update_item(
+            Key=self._MEMORY_VERSION_KEY,
+            UpdateExpression="SET version = if_not_exists(version, :zero) + :one",
+            ExpressionAttributeValues={":zero": 0, ":one": 1},
+            ReturnValues="UPDATED_NEW",
+        )
+        return int(response["Attributes"]["version"])
+
+    def get_last_curated_at(self) -> str | None:
+        """
+        Get the timestamp of the last curation pass (the curator's watermark).
+
+        Returns:
+            ISO-8601 timestamp string, or None if the curator has never run.
+        """
+        response = self.table.get_item(Key=self._HOT_MEMORY_KEY)
+        item = response.get("Item")
+        return item.get("last_curated_at") if item else None
+
+    def set_last_curated_at(self, timestamp: str) -> None:
+        """
+        Advance the curator watermark. Uses update_item so it merges onto the
+        MEMORY#HOT item without clobbering the hot memory text.
+
+        Args:
+            timestamp: ISO-8601 timestamp of the signal that was consolidated.
+        """
+        self.table.update_item(
+            Key=self._HOT_MEMORY_KEY,
+            UpdateExpression="SET last_curated_at = :ts",
+            ExpressionAttributeValues={":ts": timestamp},
+        )
+
+    # =========================================================================
     # Batch Operations
     # =========================================================================
 

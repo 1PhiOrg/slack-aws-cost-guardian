@@ -101,6 +101,11 @@ def main():
     daily_report_enabled = reports_config.get("daily", {}).get("enabled", True)
     weekly_report_enabled = reports_config.get("weekly", {}).get("enabled", True)
 
+    # Learning-memory curator schedule settings
+    curator_config = config.get("memory", {}).get("curator", {})
+    curator_enabled = curator_config.get("enabled", True)
+    curator_hour = curator_config.get("schedule_hour", 8)
+
     # Check if Anthropic cost collection is enabled
     anthropic_costs_enabled = os.environ.get("ANTHROPIC_COSTS_ENABLED", "").lower() in (
         "true", "1", "yes"
@@ -144,6 +149,8 @@ def main():
         weekly_report_hour_utc=weekly_report_hour,
         daily_report_enabled=daily_report_enabled,
         weekly_report_enabled=weekly_report_enabled,
+        curator_enabled=curator_enabled,
+        curator_hour_utc=curator_hour,
         anthropic_costs_enabled=anthropic_costs_enabled,
         version=version,
         git_commit=git_commit,

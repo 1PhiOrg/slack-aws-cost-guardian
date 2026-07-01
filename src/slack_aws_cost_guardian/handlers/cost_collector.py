@@ -17,6 +17,7 @@ from uuid import uuid4
 import boto3
 
 from slack_aws_cost_guardian.analysis.anomaly_detector import AnomalyDetector, DetectedAnomaly
+from slack_aws_cost_guardian.analysis.curator import MemoryCurator
 from slack_aws_cost_guardian.analysis.report_builder import build_daily_summary, build_weekly_summary
 from slack_aws_cost_guardian.collectors.anthropic_costs import AnthropicCostCollector
 from slack_aws_cost_guardian.collectors.aws_budgets import BudgetsCollector
@@ -77,6 +78,15 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             skip_llm=skip_llm,
         )
 
+    # Memory admin actions: show / set / clear the hot learning memory
+    memory_action = event.get("memory_action")
+    if memory_action:
+        return _handle_memory_action(memory_action, event)
+
+    # Curator: fold recent feedback into the hot learning memory
+    if event.get("curate"):
+        return _handle_curate(event=event, test_mode=test_mode)
+
     # Backfill mode: load historical data
     backfill_days = event.get("backfill_days")
     if backfill_days:
@@ -125,6 +135,16 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             print(f"Loaded guardian context: {len(guardian_context)} chars")
         except Exception as e:
             print(f"Warning: Could not load guardian context: {e}")
+
+    # Load hot learning memory (injected into anomaly analysis as an override/
+    # addendum to guardian context). Read once per invocation; empty until seeded.
+    hot_memory = ""
+    try:
+        hot_memory = storage.get_hot_memory()
+        if hot_memory:
+            print(f"Loaded hot memory: {len(hot_memory)} chars")
+    except Exception as e:
+        print(f"Warning: Could not load hot memory: {e}")
 
     # Initialize LLM client (if configured and not skipped)
     llm_client: LLMClient | None = None
@@ -281,6 +301,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                             historical_context=historical_summary,
                             user_context=guardian_context,
                             system_prompt=SYSTEM_PROMPT,
+                            hot_memory=hot_memory,
                         )
 
                         if ai_analysis:
@@ -457,6 +478,78 @@ def _build_historical_summary(snapshots: list[CostSnapshot], service: str) -> st
         return f"No recent cost history for {service}."
 
     return f"Recent {service} daily costs:\n" + "\n".join(service_costs)
+
+
+def _handle_memory_action(action: str, event: dict[str, Any]) -> dict[str, Any]:
+    """
+    Show, set, or clear the hot learning memory.
+
+    Ops/admin helper used by the make memory targets. Actions:
+    - "show":  return current hot memory text and version pointer
+    - "set":   replace hot memory with event["memory_text"]
+    - "clear": empty the hot memory
+    """
+    config = load_config()
+    table_name = os.environ.get("TABLE_NAME", f"cost-guardian-{config.environment}")
+    storage = DynamoDBStorage(table_name)
+
+    if action == "show":
+        text = storage.get_hot_memory()
+        return {
+            "statusCode": 200,
+            "memory_action": "show",
+            "chars": len(text),
+            "memory_version": storage.get_memory_version(),
+            "hot_memory": text,
+        }
+    if action == "set":
+        text = str(event.get("memory_text", ""))
+        storage.put_hot_memory(text)
+        return {"statusCode": 200, "memory_action": "set", "chars": len(text)}
+    if action == "clear":
+        storage.put_hot_memory("")
+        return {"statusCode": 200, "memory_action": "clear"}
+
+    return {"statusCode": 400, "error": f"unknown memory_action: {action}"}
+
+
+def _handle_curate(event: dict[str, Any], test_mode: bool) -> dict[str, Any]:
+    """
+    Run the learning-memory curator: fold recent feedback and acknowledged
+    changes into the lean hot memory (P1). Never raises - degrades gracefully so
+    a scheduled run can't crash the function.
+    """
+    print("Running memory curator...")
+    config = load_config()
+    table_name = os.environ.get("TABLE_NAME", f"cost-guardian-{config.environment}")
+    config_secret_name = os.environ.get(
+        "CONFIG_SECRET_NAME", f"cost-guardian/{config.environment}/config"
+    )
+
+    storage = DynamoDBStorage(table_name)
+
+    try:
+        llm_client = LLMClient(
+            config=config.llm,
+            secret_name=config_secret_name,
+            region=config.aws.region,
+        )
+    except Exception as e:
+        print(f"Curator: could not initialize LLM client: {e}")
+        return {"statusCode": 200, "changed": False, "reason": "no_llm_client", "error": str(e)}
+
+    dry_run = bool(event.get("dry_run", False))
+    force = bool(event.get("force", False))
+    feedback_days = int(event.get("feedback_days", 30))
+
+    curator = MemoryCurator(
+        storage=storage,
+        llm_client=llm_client,
+        feedback_days=feedback_days,
+    )
+    result = curator.run(dry_run=dry_run, force=force)
+    print(f"Curator result: {json.dumps(result)}")
+    return {"statusCode": 200, **result}
 
 
 def _handle_report_generation(

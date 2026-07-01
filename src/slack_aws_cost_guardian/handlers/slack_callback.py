@@ -99,6 +99,12 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     try:
         _store_feedback(interaction, feedback_type)
         print(f"Stored feedback: {feedback_type.value}")
+        # Fire-and-forget: fold this feedback into hot memory. Async invoke so
+        # the Slack 3-second ack isn't blocked by the curator's LLM call.
+        try:
+            _trigger_curator()
+        except Exception as e:
+            print(f"Failed to trigger curator (non-fatal): {e}")
     except Exception as e:
         print(f"Failed to store feedback: {e}")
         # Continue to update Slack message even if storage fails
@@ -117,6 +123,26 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         "headers": {"Content-Type": "application/json"},
         "body": json.dumps({"ok": True}),
     }
+
+
+def _trigger_curator() -> None:
+    """
+    Asynchronously invoke the collector Lambda to run the memory curator.
+
+    Event-driven curation: whenever the user gives feedback, fold it into hot
+    memory. Uses async ("Event") invocation so this returns immediately and the
+    curator's LLM call happens out of band. No-op if the target isn't configured.
+    """
+    function_name = os.environ.get("COLLECTOR_FUNCTION_NAME")
+    if not function_name:
+        return
+    client = boto3.client("lambda")
+    client.invoke(
+        FunctionName=function_name,
+        InvocationType="Event",  # async, fire-and-forget
+        Payload=json.dumps({"curate": True}).encode("utf-8"),
+    )
+    print(f"Triggered memory curator via {function_name}")
 
 
 def _get_signing_secret() -> str | None:

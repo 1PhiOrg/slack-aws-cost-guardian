@@ -210,6 +210,23 @@ reports:
     include_ai_insights: true
 
 # -----------------------------------------------------------------------------
+# Learning Memory
+# -----------------------------------------------------------------------------
+# The curator folds your feedback on alerts (expected / unexpected / investigating)
+# into a lean "hot memory" that is injected into every future anomaly check, so the
+# guardian stops re-flagging things you've already accepted. See docs/MEMORY-SYSTEM.md.
+#
+# Curation is primarily EVENT-DRIVEN: it runs right after you give feedback. The
+# schedule below is only a weekly backstop (Monday) that catches consolidation if
+# no feedback fired for a while. A watermark gate makes it a no-op when nothing is
+# new, so it costs nothing when idle. Set enabled: false to drop the backstop.
+#
+memory:
+  curator:
+    enabled: true
+    schedule_hour: 8      # UTC hour for the weekly (Monday) backstop pass
+
+# -----------------------------------------------------------------------------
 # Notification Routing
 # -----------------------------------------------------------------------------
 # Which channel receives which notification type.

@@ -39,6 +39,8 @@ class CollectorStack(Stack):
         weekly_report_hour_utc: int = 14,  # 6am PST = 14:00 UTC
         daily_report_enabled: bool = True,
         weekly_report_enabled: bool = True,
+        curator_enabled: bool = True,
+        curator_hour_utc: int = 8,
         anthropic_costs_enabled: bool = False,
         version: str = "0.0.0",
         git_commit: str = "unknown",
@@ -72,6 +74,8 @@ class CollectorStack(Stack):
         self.weekly_report_hour_utc = weekly_report_hour_utc
         self.daily_report_enabled = daily_report_enabled
         self.weekly_report_enabled = weekly_report_enabled
+        self.curator_enabled = curator_enabled
+        self.curator_hour_utc = curator_hour_utc
         self.anthropic_costs_enabled = anthropic_costs_enabled
         self.version = version
         self.git_commit = git_commit
@@ -95,6 +99,7 @@ class CollectorStack(Stack):
         # Create EventBridge schedules
         self._create_schedule()
         self._create_report_schedules()
+        self._create_curator_schedule()
 
     def _create_config_secret(self) -> secretsmanager.Secret:
         """Create the unified Secrets Manager secret for all app configuration."""
@@ -279,6 +284,40 @@ class CollectorStack(Stack):
                     event=events.RuleTargetInput.from_object({"report_type": "weekly"}),
                 )
             )
+
+    def _create_curator_schedule(self) -> None:
+        """
+        Create the EventBridge schedule for the learning-memory curator.
+
+        This is a *backstop*, not the primary trigger. Curation runs event-driven
+        (the callback Lambda invokes the curator right after feedback is given).
+        This weekly pass exists only to catch consolidation/pruning if no feedback
+        event fired for a while; a cheap watermark gate makes it a no-op when
+        there is nothing new to consolidate.
+        """
+        if not self.curator_enabled:
+            return
+
+        curator_rule = events.Rule(
+            self,
+            "MemoryCuratorSchedule",
+            rule_name=f"cost-guardian-curator-{self.deploy_env}",
+            description=(
+                "Weekly backstop for the learning-memory curator "
+                f"(Monday {self.curator_hour_utc:02d}:00 UTC; gated - no-op when no new signal)"
+            ),
+            schedule=events.Schedule.cron(
+                minute="0",
+                hour=str(self.curator_hour_utc),
+                week_day="MON",
+            ),
+        )
+        curator_rule.add_target(
+            targets.LambdaFunction(
+                self.collector_function,
+                event=events.RuleTargetInput.from_object({"curate": True}),
+            )
+        )
 
     @property
     def function_arn(self) -> str:

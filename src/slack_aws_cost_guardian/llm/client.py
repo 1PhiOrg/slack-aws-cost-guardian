@@ -108,6 +108,7 @@ class LLMClient:
         historical_context: str,
         user_context: str,
         system_prompt: str,
+        hot_memory: str = "",
     ) -> str | None:
         """
         Analyze an anomaly using the configured LLM.
@@ -120,6 +121,8 @@ class LLMClient:
             historical_context: Summary of recent cost history.
             user_context: User-specific context from guardian-context.md.
             system_prompt: System prompt defining AI behavior.
+            hot_memory: Curated learned-memory text injected as an override/
+                addendum to user_context. Optional.
 
         Returns:
             Analysis text if successful, None on any failure.
@@ -133,6 +136,7 @@ class LLMClient:
                 anomaly_data=anomaly_data,
                 historical_context=historical_context,
                 user_context=user_context,
+                hot_memory=hot_memory,
             )
 
             messages = [

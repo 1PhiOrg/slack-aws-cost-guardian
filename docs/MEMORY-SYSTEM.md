@@ -122,15 +122,29 @@ The conversation navigation loop is the one place an agent framework would actua
 
 ## Write path — how memories are created
 
-1. **Raw signal (already captured).** `FEEDBACK#` items from Slack buttons; the unused `CHANGE#` change log.
-2. **Thread harvest.** On thread close (inactivity timeout or explicit `🧠` / `/remember`), summarize the thread into a **candidate** deep-memory concept.
-3. **Consolidation (the curator).** Scheduled on the existing daily/weekly EventBridge cadence. Reads recent feedback + change log + thread candidates + the current hot item + `INDEX.md`, then: rewrites the lean `MEMORY#HOT` item, and writes/updates/prunes deep concept files in S3. Bumps `MEMORY#VERSION`.
+Two things that are easy to conflate: **sources** of signal vs the **consolidation** step (the curator). Conversations are a *source* that feeds the curator; they don't replace it. And the curator is *trigger-agnostic* — separate the trigger (what wakes it) from the gate (whether it's worth an LLM call).
+
+### Sources of signal
+1. **Button feedback (already captured).** `FEEDBACK#` items from Slack alert buttons (expected / unexpected / investigating + note). Implicit "this is fine" signal. Not a conversation.
+2. **Explicit "remember this."** A `🧠` reaction or `/remember` in a thread — free-form facts beyond what a button can express. High-precision, and it sidesteps thread-close detection. (P3 — needs the Slack thread event plumbing.)
+3. **Thread harvest.** On thread close (inactivity timeout — Slack has no native "conversation ended" event), summarize the thread into a **candidate**. Recall insurance for facts the user didn't explicitly flag. The fiddliest trigger; lowest priority. (P3.)
+
+### The consolidation step (the curator)
+Reads recent feedback + change log + thread candidates + current hot memory (+ `INDEX.md` in P2+), then rewrites the lean `MEMORY#HOT` item (and writes/prunes deep concept files + bumps `MEMORY#VERSION` in P2+). `MemoryCurator.run()` is the same regardless of what triggered it.
+
+### Triggers vs. gate
+- **Triggers (event-driven, primary):** the callback Lambda async-invokes the curator right after storing feedback; later, `/remember` and thread-close fire it too. This scales to zero — nothing fires when the account is idle (which for a low-activity environment may be weeks or months), and fires immediately when you do interact.
+- **Gate (cheap, in front of every trigger):** a **watermark** (`last_curated_at` on `MEMORY#HOT`). Before spending an LLM call, compare it to the newest signal timestamp; if nothing is newer, return a no-op. So any trigger — and the backstop — is safe to fire often.
+- **Backstop (scheduled, gated):** a **weekly** EventBridge pass (Monday), not daily. In a constant low-activity environment it almost always no-ops for free; it exists only so consolidation/pruning still happens if button feedback accrued but no other trigger fired. Off via `memory.curator.enabled: false`.
+- **Manual override:** `make run-curator` / `make test-curate` pass `force: true` to bypass the gate for testing.
+
+> Not triggers for consolidation: **LLM-proposes-"remember this?"** during a conversation is deferred to P3 (it needs the conversation loop already running, and per-message inspection is only cheap there).
 
 ```
-FEEDBACK# / CHANGE#  ─┐
-thread harvest       ─┼─► Consolidation (LLM) ─► MEMORY#HOT (DynamoDB, rewritten lean)
-current hot + index  ─┘                          └─► memory/*.md + INDEX.md (S3)
-                                                  └─► bump MEMORY#VERSION
+button feedback ──(async invoke)──┐
+/remember, thread close (P3) ─────┼─► [watermark gate] ─► MemoryCurator.run() ─► MEMORY#HOT (rewritten lean)
+weekly backstop (gated) ──────────┘         │ no-op if                        └─► memory/*.md + INDEX.md (P2+)
+                                            └ nothing newer than watermark
 ```
 
 ## OKF (confirmed) and optional OKR
@@ -161,14 +175,13 @@ Prove the read/inject path with a hand-written hot memory before any LLM curatio
 - Add `MEMORY#VERSION` pointer item (used later by the conversation path; harmless now).
 - **Done when:** a manually-edited hot fact visibly changes an anomaly assessment (e.g. seed "prod NAT baseline is accepted" and confirm a NAT bump stops surfacing).
 
-### Phase 1 — The curator (the actual learning loop)
+### Phase 1 — The curator (the actual learning loop) ✅ built
 Make hot memory write itself from real signal.
-- New consolidation Lambda on an EventBridge schedule (start daily; reuse the existing cadence wiring).
-- Inputs: recent `FEEDBACK#` items + `CHANGE#` log + current `MEMORY#HOT`. (No deep memory yet — curator only maintains the hot item in this phase.)
-- Uses curator prompt #2, but with `concept_writes`/`index_md` ignored for now — it only rewrites `hot_memory_text`.
-- Curator model: Haiku-class.
-- Write the new hot text back to `MEMORY#HOT`; log `notes` for an audit trail.
-- **Done when:** clicking "expected" on a recurring alert causes that pattern to stop being surfaced on the next check, with no human editing the hot item.
+- `MemoryCurator.run()` reads recent `FEEDBACK#` + `CHANGE#` + current `MEMORY#HOT`, rewrites the lean hot item. (No deep memory yet — hot only in this phase.)
+- Curator prompt is P1-minimal (`hot_memory_text` + `notes`); `concept_writes`/`index_md` arrive in P2.
+- **Trigger is event-driven, not a daily clock:** the callback Lambda async-invokes the curator right after storing feedback (`{"curate": true}`). A **watermark gate** (`last_curated_at`) skips the LLM call when nothing is newer. A **weekly** EventBridge pass is a gated backstop only. See "Write path" above.
+- Curator model: currently reuses the configured `llm` provider/model; Haiku-class recommended (a per-task model override is a future enhancement since the client is shared with anomaly analysis).
+- **Done when:** clicking "expected" on a recurring alert causes that pattern to stop being surfaced on the next check, with no human editing the hot item. ✅
 
 ### Phase 2 — Deep memory store (write side, still no conversation)
 Start accumulating the OKF corpus so there's something to navigate later.

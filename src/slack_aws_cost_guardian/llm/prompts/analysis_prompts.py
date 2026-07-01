@@ -6,10 +6,25 @@ to generate AI-powered insights.
 """
 
 
+def _hot_memory_block(hot_memory: str) -> str:
+    """Render the learned-memory section, or empty string if there is none."""
+    if not hot_memory.strip():
+        return ""
+    return f"""
+## Learned Memory (override / addendum to the environment above)
+Curated memory from prior interactions and user feedback. It OVERRIDES the
+environment context above where they conflict. Treat it as established fact
+about this user's infrastructure and preferences when judging whether this is
+an anomaly worth surfacing.
+{hot_memory}
+"""
+
+
 def build_anomaly_analysis_prompt(
     anomaly_data: dict,
     historical_context: str,
     user_context: str,
+    hot_memory: str = "",
 ) -> str:
     """
     Build a prompt for analyzing a cost anomaly.
@@ -18,6 +33,7 @@ def build_anomaly_analysis_prompt(
         anomaly_data: Dict with service, current_cost, baseline_cost, etc.
         historical_context: Recent cost history summary.
         user_context: User's guardian-context.md content.
+        hot_memory: Curated learned-memory text (override/addendum). Optional.
     """
     return f"""Analyze this AWS cost anomaly and provide insights.
 
@@ -33,7 +49,7 @@ def build_anomaly_analysis_prompt(
 
 ## User's Environment
 {user_context}
-
+{_hot_memory_block(hot_memory)}
 Provide:
 1. Most likely explanation (1-2 sentences)
 2. Potential causes to investigate
