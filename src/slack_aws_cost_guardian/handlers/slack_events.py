@@ -288,6 +288,7 @@ def _answer_question(
         tool_registry = create_cost_tools(
             table_name=table_name if table_name else None,
             region=region,
+            exclude_credits=config.collection.sources.cost_explorer.exclude_credits,
         )
         tools = list(COST_TOOLS)
         if config_bucket and storage:

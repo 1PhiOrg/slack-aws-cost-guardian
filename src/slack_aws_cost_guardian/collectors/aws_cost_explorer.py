@@ -39,6 +39,7 @@ class CostExplorerCollector(CostCollector):
         region: str = "us-east-1",
         granularity: Literal["DAILY", "HOURLY", "MONTHLY"] = "DAILY",
         cost_data_lag_days: int = 2,
+        exclude_credits: bool = True,
         ce_client: boto3.client | None = None,
         sts_client: boto3.client | None = None,
     ):
@@ -50,15 +51,32 @@ class CostExplorerCollector(CostCollector):
             granularity: Cost granularity (DAILY recommended for cost efficiency).
             cost_data_lag_days: Days to wait for data to populate (default 2).
                 AWS Cost Explorer data takes 24-48 hours to become accurate.
+            exclude_credits: Exclude Credit/Refund record types so reported cost
+                reflects gross (pre-credit) usage. Defaults to True. AWS metrics
+                net credits out, hiding real spend for accounts on promo credits.
             ce_client: Optional boto3 Cost Explorer client.
             sts_client: Optional boto3 STS client for account ID.
         """
         self.region = region
         self.granularity = granularity
         self.cost_data_lag_days = cost_data_lag_days
+        self.exclude_credits = exclude_credits
         self._ce_client = ce_client
         self._sts_client = sts_client
         self._account_id: str | None = None
+
+    def _record_type_filter(self) -> dict | None:
+        """
+        Cost Explorer Filter that excludes credits/refunds when enabled.
+
+        AWS promotional credits post as negative Credit line items that every
+        Cost Explorer metric nets in. Filtering the RECORD_TYPE dimension is the
+        only way to get the gross, pre-credit number (changing the metric does
+        not work). Returns None when exclude_credits is False.
+        """
+        if not self.exclude_credits:
+            return None
+        return {"Not": {"Dimensions": {"Key": "RECORD_TYPE", "Values": ["Credit", "Refund"]}}}
 
     @property
     def ce_client(self) -> boto3.client:
@@ -144,6 +162,7 @@ class CostExplorerCollector(CostCollector):
 
     def _get_daily_costs(self, start_date: date, end_date: date) -> list[DailyCost]:
         """Get daily cost breakdown."""
+        cost_filter = self._record_type_filter()
         try:
             response = self.ce_client.get_cost_and_usage(
                 TimePeriod={
@@ -152,6 +171,7 @@ class CostExplorerCollector(CostCollector):
                 },
                 Granularity="DAILY",
                 Metrics=["UnblendedCost"],
+                **({"Filter": cost_filter} if cost_filter else {}),
             )
 
             daily_costs = []
@@ -186,6 +206,7 @@ class CostExplorerCollector(CostCollector):
         query_start = target_date
         query_end = target_date + timedelta(days=1)
 
+        cost_filter = self._record_type_filter()
         try:
             response = self.ce_client.get_cost_and_usage(
                 TimePeriod={
@@ -195,6 +216,7 @@ class CostExplorerCollector(CostCollector):
                 Granularity="DAILY",
                 Metrics=["UnblendedCost"],
                 GroupBy=[{"Type": "DIMENSION", "Key": "SERVICE"}],
+                **({"Filter": cost_filter} if cost_filter else {}),
             )
 
             cost_by_service: dict[str, float] = {}
@@ -215,6 +237,7 @@ class CostExplorerCollector(CostCollector):
         self, start_date: date, end_date: date
     ) -> dict[str, AccountCostData]:
         """Get cost breakdown by linked account (for Organizations)."""
+        cost_filter = self._record_type_filter()
         try:
             response = self.ce_client.get_cost_and_usage(
                 TimePeriod={
@@ -224,6 +247,7 @@ class CostExplorerCollector(CostCollector):
                 Granularity="MONTHLY",
                 Metrics=["UnblendedCost"],
                 GroupBy=[{"Type": "DIMENSION", "Key": "LINKED_ACCOUNT"}],
+                **({"Filter": cost_filter} if cost_filter else {}),
             )
 
             cost_by_account: dict[str, AccountCostData] = {}
@@ -264,7 +288,9 @@ class CostExplorerCollector(CostCollector):
             if now >= month_end - timedelta(days=1):
                 return None
 
-            # Get forecast
+            cost_filter = self._record_type_filter()
+
+            # Get forecast (also accepts a Filter, so gross burn is forecast too)
             forecast_response = self.ce_client.get_cost_forecast(
                 TimePeriod={
                     "Start": now.isoformat(),
@@ -272,6 +298,7 @@ class CostExplorerCollector(CostCollector):
                 },
                 Metric="UNBLENDED_COST",
                 Granularity="MONTHLY",
+                **({"Filter": cost_filter} if cost_filter else {}),
             )
 
             forecasted_total = float(forecast_response["Total"]["Amount"])
@@ -284,6 +311,7 @@ class CostExplorerCollector(CostCollector):
                 },
                 Granularity="MONTHLY",
                 Metrics=["UnblendedCost"],
+                **({"Filter": cost_filter} if cost_filter else {}),
             )
 
             current_spend = 0.0
@@ -346,6 +374,7 @@ class CostExplorerCollector(CostCollector):
         """
         next_day = target_date + timedelta(days=1)
 
+        cost_filter = self._record_type_filter()
         try:
             response = self.ce_client.get_cost_and_usage(
                 TimePeriod={
@@ -355,6 +384,7 @@ class CostExplorerCollector(CostCollector):
                 Granularity="DAILY",
                 Metrics=["UnblendedCost"],
                 GroupBy=[{"Type": "DIMENSION", "Key": "SERVICE"}],
+                **({"Filter": cost_filter} if cost_filter else {}),
             )
 
             cost_by_service: dict[str, float] = {}

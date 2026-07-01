@@ -21,6 +21,10 @@ class CostExplorerSourceConfig(BaseModel):
     # Cost data lag: how many days to wait for data to fully populate
     # AWS Cost Explorer data takes 24-48 hours to become accurate
     cost_data_lag_days: int = Field(default=2, ge=1, le=7)
+    # Exclude credits/refunds so reported cost reflects gross usage (pre-credit
+    # burn). Essential when running on promotional credits — the standard metrics
+    # net credits out and hide real spend. Set false to report net (post-credit).
+    exclude_credits: bool = Field(default=True)
 
 
 class BudgetsSourceConfig(BaseModel):
