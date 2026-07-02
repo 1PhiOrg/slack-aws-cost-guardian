@@ -17,6 +17,8 @@ AWS_REGION ?= us-east-1
 
 # Default backfill days
 BACKFILL_DAYS ?= 30
+# Overwrite existing snapshots when backfilling (true/false)
+OVERWRITE ?= false
 
 # Version from VERSION file
 VERSION := $(shell cat VERSION 2>/dev/null || echo "0.0.0")
@@ -498,15 +500,19 @@ clear-snapshots-execute: ## Actually delete snapshots (use with caution!)
 	@echo "$(YELLOW)Deleting snapshots from last $(BACKFILL_DAYS) days...$(RESET)"
 	@python3 scripts/clear_snapshots.py --env $(ENV) --days $(BACKFILL_DAYS) --execute
 
-backfill: ## Backfill historical cost data (BACKFILL_DAYS=30)
+backfill: ## Backfill historical cost data (BACKFILL_DAYS=30 OVERWRITE=false)
 	@echo "$(BLUE)Backfilling $(BACKFILL_DAYS) days of historical cost data...$(RESET)"
 	@echo "$(YELLOW)This queries AWS Cost Explorer and stores snapshots in DynamoDB.$(RESET)"
-	@echo "$(YELLOW)Existing data will NOT be overwritten.$(RESET)"
+	@if [ "$(OVERWRITE)" = "true" ]; then \
+		echo "$(YELLOW)OVERWRITE=true: existing snapshots WILL be replaced.$(RESET)"; \
+	else \
+		echo "$(YELLOW)Existing data will NOT be overwritten (set OVERWRITE=true to replace).$(RESET)"; \
+	fi
 	@echo ""
 	@FUNCTION_NAME="cost-guardian-collector-$(ENV)" && \
 	aws lambda invoke \
 		--function-name "$$FUNCTION_NAME" \
-		--payload '{"backfill_days": $(BACKFILL_DAYS), "test_mode": true}' \
+		--payload '{"backfill_days": $(BACKFILL_DAYS), "test_mode": true, "overwrite": $(OVERWRITE)}' \
 		--cli-binary-format raw-in-base64-out \
 		--log-type Tail \
 		--query 'LogResult' \
