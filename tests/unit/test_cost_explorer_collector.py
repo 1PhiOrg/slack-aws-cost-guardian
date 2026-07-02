@@ -92,3 +92,30 @@ def test_forecast_applies_filter_to_both_calls():
 
     assert ce.get_cost_forecast.call_args.kwargs["Filter"] == EXPECTED_FILTER
     assert ce.get_cost_and_usage.call_args.kwargs["Filter"] == EXPECTED_FILTER
+
+
+def test_forecast_skips_current_spend_query_on_first_of_month():
+    """On the 1st, now == month_start; the [month_start, now) range is empty and
+    Cost Explorer raises ValidationException. The current-spend query must be
+    skipped and month-to-date spend treated as 0."""
+    collector, ce = _make_collector(exclude_credits=True)
+
+    from slack_aws_cost_guardian.collectors import aws_cost_explorer as mod
+
+    original_date = mod.date
+
+    class _FirstOfMonth(original_date):
+        @classmethod
+        def today(cls):
+            return original_date(2026, 7, 1)
+
+    mod.date = _FirstOfMonth
+    try:
+        forecast = collector._get_forecast()
+    finally:
+        mod.date = original_date
+
+    # Forecast query still runs; current-spend query is skipped entirely.
+    ce.get_cost_and_usage.assert_not_called()
+    assert forecast is not None
+    assert forecast.current_spend == 0.0

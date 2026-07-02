@@ -303,22 +303,26 @@ class CostExplorerCollector(CostCollector):
 
             forecasted_total = float(forecast_response["Total"]["Amount"])
 
-            # Get current month spend
-            current_response = self.ce_client.get_cost_and_usage(
-                TimePeriod={
-                    "Start": month_start.isoformat(),
-                    "End": now.isoformat(),
-                },
-                Granularity="MONTHLY",
-                Metrics=["UnblendedCost"],
-                **({"Filter": cost_filter} if cost_filter else {}),
-            )
-
+            # Get current month spend. On the 1st of the month now == month_start,
+            # so the [month_start, now) range is empty and Cost Explorer raises a
+            # ValidationException ("Start date should be before end date"). Skip the
+            # query on day 1 and treat month-to-date spend as 0.
             current_spend = 0.0
-            if current_response.get("ResultsByTime"):
-                current_spend = float(
-                    current_response["ResultsByTime"][0]["Total"]["UnblendedCost"]["Amount"]
+            if now > month_start:
+                current_response = self.ce_client.get_cost_and_usage(
+                    TimePeriod={
+                        "Start": month_start.isoformat(),
+                        "End": now.isoformat(),
+                    },
+                    Granularity="MONTHLY",
+                    Metrics=["UnblendedCost"],
+                    **({"Filter": cost_filter} if cost_filter else {}),
                 )
+
+                if current_response.get("ResultsByTime"):
+                    current_spend = float(
+                        current_response["ResultsByTime"][0]["Total"]["UnblendedCost"]["Amount"]
+                    )
 
             days_elapsed = (now - month_start).days
             days_remaining = (month_end - now).days

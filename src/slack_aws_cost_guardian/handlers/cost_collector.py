@@ -94,6 +94,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         return _handle_backfill(
             days=int(backfill_days),
             test_mode=test_mode,
+            overwrite=bool(event.get("overwrite", False)),
         )
 
     if test_mode:
@@ -198,19 +199,42 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         if budgets:
             # Use first budget for now (can be enhanced to support multiple)
             b = budgets[0]
+            monthly_spent = b.actual_spend
+            monthly_percent = b.percentage_used
+
+            # AWS Budgets reports net (post-credit) spend. When we report gross
+            # (exclude_credits), honor that here too so burn-rate alerts fire on
+            # real spend rather than post-credit dollars. Use the gross
+            # month-to-date total from the forecast (queried with the credit
+            # filter) as the source of truth.
+            if (
+                config.collection.sources.cost_explorer.exclude_credits
+                and cost_data.forecast is not None
+            ):
+                monthly_spent = cost_data.forecast.current_spend
+                monthly_percent = (monthly_spent / b.limit * 100) if b.limit > 0 else 0.0
+                print(
+                    f"Budget: using gross MTD spend ${monthly_spent:.2f} "
+                    f"(AWS Budgets net was ${b.actual_spend:.2f})"
+                )
+
             budget_info = BudgetStatus(
                 monthly_budget=b.limit,
-                monthly_spent=b.actual_spend,
-                monthly_percent=b.percentage_used,
+                monthly_spent=monthly_spent,
+                monthly_percent=monthly_percent,
             )
-            print(f"Budget status: {b.percentage_used:.1f}% used (${b.actual_spend:.2f} of ${b.limit:.2f})")
+            print(f"Budget status: {monthly_percent:.1f}% used (${monthly_spent:.2f} of ${b.limit:.2f})")
         else:
             print("No budgets found")
 
     # Merge costs from all providers and create snapshot
     print("Creating cost snapshot...")
     merged_cost_data = _merge_provider_costs(cost_data, anthropic_data)
-    snapshot = _create_snapshot(merged_cost_data, budget_info, config.environment)
+    snapshot = _create_snapshot(
+        merged_cost_data,
+        budget_info,
+        config.collection.sources.cost_explorer.retention_days,
+    )
 
     # Store snapshot (unless skip_storage)
     if not skip_storage:
@@ -385,14 +409,14 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 def _create_snapshot(
     cost_data: Any,
     budget_info: BudgetStatus | None,
-    environment: str,
+    retention_days: int,
 ) -> CostSnapshot:
     """Create a CostSnapshot from collected data."""
     now = datetime.now(UTC)
 
-    # Calculate TTL based on environment (90 days for daily snapshots)
-    ttl_days = 90 if environment != "dev" else 7
-    ttl = int((now + timedelta(days=ttl_days)).timestamp())
+    # TTL: DynamoDB auto-deletes rows past this. Configurable via
+    # cost_explorer.retention_days (default ~2 years).
+    ttl = int((now + timedelta(days=retention_days)).timestamp())
 
     # Create forecast info if available
     forecast = None
@@ -790,6 +814,7 @@ def _handle_report_generation(
 def _handle_backfill(
     days: int,
     test_mode: bool,
+    overwrite: bool = False,
 ) -> dict[str, Any]:
     """
     Backfill historical cost data from AWS Cost Explorer and optionally Anthropic.
@@ -801,11 +826,14 @@ def _handle_backfill(
     Args:
         days: Number of days to backfill.
         test_mode: Whether running in test mode.
+        overwrite: If True, replace snapshots for dates that already have data
+            instead of skipping them. Needed to re-patch history on accounts
+            that already have snapshots.
 
     Returns:
         Lambda response dict.
     """
-    print(f"Backfilling {days} days of historical data...")
+    print(f"Backfilling {days} days of historical data (overwrite={overwrite})...")
 
     # Load configuration
     config = load_config()
@@ -870,12 +898,17 @@ def _handle_backfill(
     for result in response.get("ResultsByTime", []):
         period_start = result["TimePeriod"]["Start"]
 
-        # Check if we already have data for this date
+        # Check if we already have data for this date. Skip unless overwrite is
+        # set — a re-backfill on an account with history would otherwise patch
+        # nothing. The backfill snapshot is keyed at hour 12, so put_snapshot
+        # naturally replaces the prior noon snapshot for the date.
         existing = storage.get_snapshots_for_date(period_start)
-        if existing:
+        if existing and not overwrite:
             print(f"  {period_start}: Already has {len(existing)} snapshot(s), skipping")
             snapshots_skipped += 1
             continue
+        if existing and overwrite:
+            print(f"  {period_start}: Overwriting {len(existing)} existing snapshot(s)")
 
         # Build cost by service dict from AWS
         cost_by_service = {}
@@ -900,9 +933,12 @@ def _handle_backfill(
             snapshots_skipped += 1
             continue
 
-        # Calculate TTL (90 days from now for backfilled data)
-        ttl_days = 90 if config.environment != "dev" else 30
-        ttl = int((datetime.now(UTC) + timedelta(days=ttl_days)).timestamp())
+        # TTL for backfilled data. Defaults to the same retention as live
+        # collection (~2 years); backfill_retention_days overrides it to give
+        # patched history its own window.
+        ce_config = config.collection.sources.cost_explorer
+        retention_days = ce_config.backfill_retention_days or ce_config.retention_days
+        ttl = int((datetime.now(UTC) + timedelta(days=retention_days)).timestamp())
 
         # Create snapshot
         snapshot = CostSnapshot(
@@ -936,6 +972,7 @@ def _handle_backfill(
             "date_range": f"{start_date} to {end_date}",
             "snapshots_created": snapshots_created,
             "snapshots_skipped": snapshots_skipped,
+            "overwrite": overwrite,
             "anthropic_enabled": config.collection.sources.anthropic.enabled,
             "test_mode": test_mode,
         },

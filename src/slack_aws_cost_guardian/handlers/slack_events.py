@@ -25,9 +25,9 @@ from slack_aws_cost_guardian.llm.tools.memory_tools import (
     register_remember_tool,
 )
 from slack_aws_cost_guardian.llm.tools.schemas import (
-    COST_QUERY_SYSTEM_PROMPT,
     COST_TOOLS,
     MEMORY_TOOLS,
+    build_cost_query_system_prompt,
 )
 from slack_aws_cost_guardian.storage.deep_memory import DeepMemoryStore
 from slack_aws_cost_guardian.storage.dynamodb import DynamoDBStorage
@@ -302,7 +302,7 @@ def _answer_question(
             user_context=guardian_context,
             tool_registry=tool_registry,
             tools=tools,
-            system_prompt=COST_QUERY_SYSTEM_PROMPT,
+            system_prompt=build_cost_query_system_prompt(datetime.now(UTC).date()),
             history=history,
         )
 
