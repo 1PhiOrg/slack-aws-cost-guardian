@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import date
+
 from slack_aws_cost_guardian.llm.base import LLMTool
 
 # System prompt for cost query assistant
@@ -41,6 +43,33 @@ Format percentages as: X% (e.g., 15%)
 Be helpful and proactive - if a user asks about "yesterday", use the tool appropriately.
 If there's an error fetching data, explain it clearly and suggest alternatives.
 """
+
+
+def build_cost_query_system_prompt(today: date | None = None) -> str:
+    """Build the cost-query system prompt with a current-date anchor.
+
+    The tools only understand concrete dates (YYYY-MM-DD / today / yesterday /
+    N_days_ago), so the model must translate relative periods ("last month",
+    "June", "this year") into concrete dates itself. Without a date anchor it
+    falls back to a training-data year and picks the wrong year. Prepend today's
+    date and instruct the model to resolve all relative references against it.
+
+    Args:
+        today: The current date (UTC). Defaults to date.today().
+
+    Returns:
+        The system prompt with the date anchor prepended.
+    """
+    if today is None:
+        today = date.today()
+
+    anchor = (
+        f"Today's date is {today.isoformat()} (UTC). Resolve all relative time "
+        'references ("today", "yesterday", "last month", "this month", "this '
+        'year", "June", etc.) relative to this date. Never assume a year — '
+        "derive it from today's date.\n\n"
+    )
+    return anchor + COST_QUERY_SYSTEM_PROMPT
 
 # Tool definitions compatible with both Claude and OpenAI
 COST_TOOLS: list[LLMTool] = [

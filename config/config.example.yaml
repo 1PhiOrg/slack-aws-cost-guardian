@@ -95,6 +95,16 @@ collection:
       # burn-down; set false to report net (post-credit) cost.
       exclude_credits: true
 
+      # Retention (TTL, in days) for cost snapshots. DynamoDB auto-deletes rows
+      # older than this. Default ~2 years so trend/history has depth (anomaly
+      # detection only needs the recent baseline).
+      retention_days: 730
+
+      # Retention for snapshots written by `make backfill`. Omit (or leave null)
+      # to inherit retention_days; set an integer to give patched history its
+      # own window independent of live collection.
+      # backfill_retention_days: null
+
     budgets:
       # Also fetch AWS Budgets data (if you have budgets configured)
       enabled: true

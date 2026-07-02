@@ -25,6 +25,16 @@ class CostExplorerSourceConfig(BaseModel):
     # burn). Essential when running on promotional credits — the standard metrics
     # net credits out and hide real spend. Set false to report net (post-credit).
     exclude_credits: bool = Field(default=True)
+    # Retention (TTL, in days) for snapshots written by live collection. Rows
+    # older than this are auto-deleted by DynamoDB's TTL. Default ~2 years so
+    # trend/history queries have depth; anomaly detection only needs the recent
+    # baseline, so this is purely about how much history to keep.
+    retention_days: int = Field(default=730, ge=1)
+    # Retention for snapshots written by the historical backfill. A backfill is
+    # an intentional history patch, so by default it inherits retention_days.
+    # Set an explicit integer to give backfilled history its own (e.g. longer)
+    # window independent of live collection.
+    backfill_retention_days: int | None = Field(default=None, ge=1)
 
 
 class BudgetsSourceConfig(BaseModel):
